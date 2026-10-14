@@ -105,9 +105,17 @@ The server also refuses readings from any address outside your LAN (`device_netw
 
 ### 4. Keep the host healthy
 
+Run the read-only check script now and then (it changes nothing):
+
+```sh
+sudo deploy/check-host.sh --lan 192.168.1.1   # IP of your router or a LAN PC
+```
+
+It checks updates, SELinux, firewall, open ports, SSH settings, accounts, the plant-server and Caddy setup, failed logins, and (with `--lan`) that the DMZ host can't connect into your LAN.
+
 - SSH with keys only (`PasswordAuthentication no`), no root login
 - Automatic security updates: `sudo dnf install dnf-automatic && sudo systemctl enable --now dnf-automatic-install.timer`
-- Nothing else running on the DMZ host
+- Nothing else running on the DMZ host (disable mDNS/LLMNR: `systemctl disable --now avahi-daemon`, `LLMNR=no` and `MulticastDNS=no` in `/etc/systemd/resolved.conf`)
 - Back up `/var/lib/plant-monitor/plants.db` and `/etc/plant-monitor/config.toml`
 - Watch failed logins: `journalctl -u plant-server | grep "failed login"`
 

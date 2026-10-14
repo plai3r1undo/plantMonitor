@@ -1,0 +1,53 @@
+# Hardened systemd unit for the plant server. Installed by deploy/install.sh.
+# The process runs as an unprivileged user, can only write its data
+# directory, and has no capabilities. Check with:
+#   systemd-analyze security plant-server
+
+[Unit]
+Description=Plant monitor server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=plantmon
+Group=plantmon
+WorkingDirectory=/var/lib/plant-monitor
+ExecStart=/usr/local/bin/plant-server -c /etc/plant-monitor/config.toml
+Environment=RUST_LOG=plant_server=info
+Restart=on-failure
+RestartSec=5
+
+# Filesystem
+ProtectSystem=strict
+ReadWritePaths=/var/lib/plant-monitor
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+UMask=0077
+
+# Privileges
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+# Kernel / system
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,47 @@
+# Plant monitor server configuration. Copy to config.toml and edit.
+# Plants and species are managed in the web UI, not here.
+# This file contains secrets: keep it readable only by the server user
+# (chmod 600).
+
+# Behind a reverse proxy (recommended for the DMZ), listen on loopback only
+# and let the proxy terminate HTTPS. For plain-HTTP use on a trusted LAN,
+# use "0.0.0.0:8080" and set secure_cookies = false.
+listen = "127.0.0.1:8080"
+database = "plants.db"
+
+# Shared secret sent by the sensor nodes (X-Api-Key header). Must match
+# DEVICE_KEY in firmware/include/secrets.h. Generate with:
+#   openssl rand -hex 24
+device_key = "CHANGE-ME-run-openssl-rand-hex-24"
+
+# Plants with no reading for this long are shown as offline (and alerted).
+offline_after_minutes = 30
+
+# The session cookie is only sent over HTTPS when true. Leave true unless you
+# serve the UI over plain HTTP on a trusted LAN.
+secure_cookies = true
+session_days = 14
+
+# IP of the reverse proxy. Requests from it take the client IP from
+# X-Forwarded-For (used for login rate limiting and logs).
+trusted_proxy = "127.0.0.1"
+
+# Networks allowed to send sensor readings. The default covers the private
+# LAN ranges, so readings from the internet are refused even if the web UI is
+# public. Narrow it to your sensors' subnet if you like:
+# device_networks = ["192.168.1.0/24"]
+
+# Link opened when you tap a notification.
+# public_url = "https://plants.example.com"
+
+# Push notifications through ntfy (https://ntfy.sh, free, or self-hosted).
+# Install the ntfy app on your phone and subscribe to the topic below.
+# On the public ntfy.sh server the topic name works like a password:
+# make it long and random (e.g. "plants-" + output of: openssl rand -hex 12).
+# [ntfy]
+# server = "https://ntfy.sh"
+# topic = "plants-CHANGE-ME"
+# token = ""                  # access token, for protected/self-hosted topics
+# alert_after_minutes = 30    # a problem must last this long before alerting
+# remind_after_hours = 24     # repeat while it persists (0 = never)
+# notify_recovery = true      # also notify when it's fixed

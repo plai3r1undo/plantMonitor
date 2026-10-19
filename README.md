@@ -185,7 +185,7 @@ Tokens are read-only. Creating, editing and deleting (plants, species, tokens) n
 ## Server CLI
 
 ```sh
-plant-server -c config.toml user-add NAME      # create a login (prompts for password, min 12 chars)
+plant-server -c config.toml user-add NAME      # create a login (prompts for password, min 12 chars; shorter only after confirming, and the UI then warns until it is changed)
 plant-server -c config.toml user-passwd NAME   # reset a password, ends all its sessions
 plant-server -c config.toml user-del NAME
 plant-server -c config.toml user-list

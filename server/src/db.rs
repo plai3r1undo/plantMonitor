@@ -39,6 +39,8 @@ pub struct User {
     pub id: i64,
     pub name: String,
     pub password_hash: String,
+    /// Set with a password shorter than auth::MIN_PASSWORD_LEN (CLI only).
+    pub weak_password: bool,
 }
 
 #[derive(Serialize)]
@@ -92,7 +94,8 @@ const SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS users (
         id            INTEGER PRIMARY KEY,
         name          TEXT NOT NULL UNIQUE,
-        password_hash TEXT NOT NULL
+        password_hash TEXT NOT NULL,
+        weak_password INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS sessions (
@@ -125,6 +128,10 @@ const SPECIES_COLUMNS: &str =
     "id, name, temp_min, temp_max, hum_min, hum_max, light_min, light_max, soil_min, soil_max, notes";
 const PLANT_COLUMNS: &str =
     "id, name, location, device_id, species_id, soil_dry_raw, soil_wet_raw, alerts";
+
+fn map_user(r: &Row) -> rusqlite::Result<User> {
+    Ok(User { id: r.get(0)?, name: r.get(1)?, password_hash: r.get(2)?, weak_password: r.get(3)? })
+}
 
 fn map_reading(row: &Row, offset: usize) -> rusqlite::Result<StoredReading> {
     Ok(StoredReading {
@@ -170,6 +177,15 @@ impl Db {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
         conn.execute_batch(SCHEMA)?;
+        // Added after the first release; older databases lack the column.
+        let has_weak: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM pragma_table_info('users') WHERE name = 'weak_password'",
+            [],
+            |r| r.get(0),
+        )?;
+        if !has_weak {
+            conn.execute_batch("ALTER TABLE users ADD COLUMN weak_password INTEGER NOT NULL DEFAULT 0")?;
+        }
         let db = Self(Mutex::new(conn));
         if db.species_list()?.is_empty() {
             for s in model::default_species() {
@@ -332,9 +348,9 @@ impl Db {
         Ok(self
             .conn()
             .query_row(
-                "SELECT id, name, password_hash FROM users WHERE name = ?1",
+                "SELECT id, name, password_hash, weak_password FROM users WHERE name = ?1",
                 [name],
-                |r| Ok(User { id: r.get(0)?, name: r.get(1)?, password_hash: r.get(2)? }),
+                map_user,
             )
             .optional()?)
     }
@@ -343,9 +359,9 @@ impl Db {
         Ok(self
             .conn()
             .query_row(
-                "SELECT id, name, password_hash FROM users WHERE id = ?1",
+                "SELECT id, name, password_hash, weak_password FROM users WHERE id = ?1",
                 [id],
-                |r| Ok(User { id: r.get(0)?, name: r.get(1)?, password_hash: r.get(2)? }),
+                map_user,
             )
             .optional()?)
     }
@@ -357,18 +373,29 @@ impl Db {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    pub fn user_create(&self, name: &str, password_hash: &str) -> Result<()> {
+    /// Users whose password is shorter than auth::MIN_PASSWORD_LEN.
+    pub fn weak_password_users(&self) -> Result<Vec<String>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT name FROM users WHERE weak_password ORDER BY name")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn user_create(&self, name: &str, password_hash: &str, weak: bool) -> Result<()> {
         self.conn().execute(
-            "INSERT INTO users (name, password_hash) VALUES (?1, ?2)",
-            params![name, password_hash],
+            "INSERT INTO users (name, password_hash, weak_password) VALUES (?1, ?2, ?3)",
+            params![name, password_hash, weak],
         )?;
         Ok(())
     }
 
     /// Changes the password and ends every session of the user except `keep_session`.
-    pub fn user_set_password(&self, id: i64, password_hash: &str, keep_session: Option<&str>) -> Result<()> {
+    pub fn user_set_password(&self, id: i64, password_hash: &str, weak: bool, keep_session: Option<&str>) -> Result<()> {
         let conn = self.conn();
-        conn.execute("UPDATE users SET password_hash = ?2 WHERE id = ?1", params![id, password_hash])?;
+        conn.execute(
+            "UPDATE users SET password_hash = ?2, weak_password = ?3 WHERE id = ?1",
+            params![id, password_hash, weak],
+        )?;
         conn.execute(
             "DELETE FROM sessions WHERE user_id = ?1 AND token_hash IS NOT ?2",
             params![id, keep_session],

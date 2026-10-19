@@ -88,13 +88,29 @@ fn main() -> Result<()> {
     }
 }
 
-fn prompt_new_password() -> Result<String> {
+/// Returns the password and whether it is weak (the admin confirmed using
+/// one shorter than auth::MIN_PASSWORD_LEN).
+fn prompt_new_password() -> Result<(String, bool)> {
     let pw = rpassword::prompt_password("New password: ")?;
-    auth::check_new_password(&pw).map_err(anyhow::Error::msg)?;
+    auth::check_password_size(&pw).map_err(anyhow::Error::msg)?;
+    let weak = auth::is_weak_password(&pw);
+    if weak {
+        eprintln!(
+            "warning: this password is shorter than {} characters and easy to guess.\n\
+             The server will log a warning and the web UI will ask you to change it.",
+            auth::MIN_PASSWORD_LEN
+        );
+        eprint!("Use it anyway? [y/N] ");
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !answer.trim().eq_ignore_ascii_case("y") {
+            bail!("password must be at least {} characters", auth::MIN_PASSWORD_LEN);
+        }
+    }
     if rpassword::prompt_password("Repeat password: ")? != pw {
         bail!("passwords don't match");
     }
-    Ok(pw)
+    Ok((pw, weak))
 }
 
 fn user_add(db: &db::Db, name: &str) -> Result<()> {
@@ -104,14 +120,16 @@ fn user_add(db: &db::Db, name: &str) -> Result<()> {
     if db.user_by_name(name)?.is_some() {
         bail!("user '{name}' already exists");
     }
-    db.user_create(name, &auth::hash_password(&prompt_new_password()?)?)?;
+    let (pw, weak) = prompt_new_password()?;
+    db.user_create(name, &auth::hash_password(&pw)?, weak)?;
     println!("created user '{name}'");
     Ok(())
 }
 
 fn user_passwd(db: &db::Db, name: &str) -> Result<()> {
     let user = db.user_by_name(name)?.with_context(|| format!("no user '{name}'"))?;
-    db.user_set_password(user.id, &auth::hash_password(&prompt_new_password()?)?, None)?;
+    let (pw, weak) = prompt_new_password()?;
+    db.user_set_password(user.id, &auth::hash_password(&pw)?, weak, None)?;
     println!("password changed; all sessions of '{name}' ended");
     Ok(())
 }
@@ -120,6 +138,13 @@ fn user_passwd(db: &db::Db, name: &str) -> Result<()> {
 async fn serve(config: config::Config, db: db::Db) -> Result<()> {
     if db.user_names()?.is_empty() {
         tracing::warn!("no users yet; create one with: plant-server user-add <name>");
+    }
+    for name in db.weak_password_users()? {
+        tracing::warn!(
+            user = %name,
+            "user has a weak password (under {} characters); change it in Settings",
+            auth::MIN_PASSWORD_LEN
+        );
     }
     if !config.secure_cookies {
         tracing::warn!("secure_cookies = false: only use this on a trusted network without HTTPS");

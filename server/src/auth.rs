@@ -78,10 +78,22 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+pub fn is_weak_password(password: &str) -> bool {
+    password.chars().count() < MIN_PASSWORD_LEN
+}
+
 pub fn check_new_password(password: &str) -> Result<(), String> {
-    let len = password.chars().count();
-    if len < MIN_PASSWORD_LEN {
+    if is_weak_password(password) {
         return Err(format!("password must be at least {MIN_PASSWORD_LEN} characters"));
+    }
+    check_password_size(password)
+}
+
+/// Upper bound only. The CLI uses this when the admin explicitly accepts a
+/// weak password; the account is then flagged and the UI nags about it.
+pub fn check_password_size(password: &str) -> Result<(), String> {
+    if password.is_empty() {
+        return Err("password must not be empty".into());
     }
     if password.len() > MAX_PASSWORD_LEN {
         return Err(format!("password must be at most {MAX_PASSWORD_LEN} bytes"));
@@ -304,7 +316,8 @@ pub async fn login(
     let max_age = state.config.session_days * 86400;
     state.db.session_create(&token_hash(&token), user.id, now, now + max_age)?;
     tracing::info!(%ip, user = %user.name, "login");
-    let mut res = Json(serde_json::json!({ "user": user.name })).into_response();
+    let mut res =
+        Json(serde_json::json!({ "user": user.name, "weak_password": user.weak_password })).into_response();
     res.headers_mut().insert(header::SET_COOKIE, session_cookie(&state.config, &token, max_age));
     Ok(res)
 }
@@ -320,11 +333,17 @@ pub async fn logout(
     Ok(res)
 }
 
-pub async fn me(Extension(principal): Extension<Principal>) -> Json<serde_json::Value> {
-    Json(match principal {
-        Principal::User { name, .. } => serde_json::json!({ "user": name, "via": "session" }),
+pub async fn me(
+    State(state): State<Arc<AppState>>,
+    Extension(principal): Extension<Principal>,
+) -> AppResult<Json<serde_json::Value>> {
+    Ok(Json(match principal {
+        Principal::User { id, name, .. } => {
+            let weak = state.db.user_by_id(id)?.is_some_and(|u| u.weak_password);
+            serde_json::json!({ "user": name, "via": "session", "weak_password": weak })
+        }
         Principal::Token => serde_json::json!({ "user": null, "via": "token" }),
-    })
+    }))
 }
 
 #[derive(Deserialize)]
@@ -354,7 +373,7 @@ pub async fn change_password(
     }
     let new_hash = tokio::task::spawn_blocking(move || hash_password(&req.new)).await??;
     // Log out everywhere else.
-    state.db.user_set_password(user_id, &new_hash, Some(session_hash))?;
+    state.db.user_set_password(user_id, &new_hash, false, Some(session_hash))?;
     tracing::info!(user = %name, "password changed");
     Ok(StatusCode::NO_CONTENT)
 }
@@ -369,6 +388,15 @@ mod tests {
         assert!(verify_password("correct horse battery", &h));
         assert!(!verify_password("wrong", &h));
         assert!(!verify_password("x", "not a hash"));
+    }
+
+    #[test]
+    fn weak_passwords() {
+        assert!(is_weak_password("1234"));
+        assert!(!is_weak_password("twelve chars"));
+        assert!(check_new_password("1234").is_err());
+        assert!(check_password_size("1234").is_ok());
+        assert!(check_password_size("").is_err());
     }
 
     #[test]

@@ -141,9 +141,10 @@ function showLogin() {
   $("#login-form [name=username]").focus();
 }
 
-function showApp(user) {
+function showApp(user, weakPassword) {
   state.user = user;
   $("#user").textContent = user;
+  $("#weak-password").hidden = !weakPassword;
   $("#login-view").hidden = true;
   $("#app-view").hidden = false;
   route();
@@ -163,7 +164,7 @@ $("#login-form").addEventListener("submit", async (e) => {
     const r = await api("POST", "/api/login", { username: f.get("username"), password: f.get("password") });
     e.target.reset();
     $("#login-error").hidden = true;
-    showApp(r.user);
+    showApp(r.user, r.weak_password);
   } catch (err) {
     $("#login-error").textContent = err.message;
     $("#login-error").hidden = false;
@@ -725,6 +726,7 @@ $("#password-form").addEventListener("submit", async (e) => {
   try {
     await api("POST", "/api/password", { current: f.current.value, new: f.new.value });
     f.reset();
+    $("#weak-password").hidden = true;
     toast("Password changed; other sessions logged out");
   } catch (err) {
     toast(err.message, true);
@@ -736,7 +738,7 @@ $("#password-form").addEventListener("submit", async (e) => {
 (async () => {
   try {
     const me = await api("GET", "/api/me");
-    showApp(me.user);
+    showApp(me.user, me.weak_password);
   } catch {
     showLogin();
   }

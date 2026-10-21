@@ -10,7 +10,7 @@ const STATUS_LABEL = {
   no_data: "No data",
 };
 
-// Charts in the detail dialog: reading field, title, unit, species range key.
+// Charts in the detail dialog: reading field, title, unit, check metric.
 const CHARTS = [
   { field: "soil_moisture", title: "Soil moisture", unit: "%", range: "soil_moisture" },
   { field: "lux", title: "Light", unit: "lx", range: "light_lux" },
@@ -37,6 +37,7 @@ const state = {
   detail: null, // { plant, hours, readings }
   editingPlant: null,
   editingSpecies: null,
+  plantSpecies: [], // species offered in the plant dialog
 };
 let refreshTimer = null;
 
@@ -257,7 +258,7 @@ function plantCard(p) {
       ${rangeBar(c)}
     </div>`).join("");
   const advice = p.checks.filter((c) => c.advice).map((c) => `<li>${esc(c.advice)}</li>`).join("");
-  const sub = [p.species_info.name, p.location].filter(Boolean).map(esc).join(" · ");
+  const sub = [p.species_info.name, p.location, p.dormancy_active && "Dormant"].filter(Boolean).map(esc).join(" · ");
 
   return `
     <article class="card ${p.status}" tabindex="0" role="button" data-id="${p.id}">
@@ -416,7 +417,9 @@ function drawCharts() {
   const { plant, readings, hours } = state.detail;
   for (const c of CHARTS) {
     const canvas = $(`#charts canvas[data-field="${c.field}"]`);
-    drawChart(canvas, readings, c.field, plant.species_info[c.range], hours);
+    // The checks carry the ranges in effect (normal or dormancy).
+    const check = plant.checks.find((k) => k.metric === c.range);
+    drawChart(canvas, readings, c.field, [check.min, check.max], hours);
   }
 }
 
@@ -475,7 +478,7 @@ async function loadPlants() {
       <tr>
         <td>${esc(p.name)}</td>
         <td>${esc(p.location) || "—"}</td>
-        <td>${esc(p.species_info.name)}</td>
+        <td>${esc(p.species_info.name)}${p.dormancy_active ? " · dormant" : ""}</td>
         <td><code>${esc(p.device_id)}</code></td>
         <td>${p.soil_dry_raw} / ${p.soil_wet_raw}</td>
         <td>${p.alerts ? "On" : "Off"}</td>
@@ -520,6 +523,7 @@ async function openPlantDialog(plant, presetDevice = "") {
     return toast(e.message, true);
   }
   form.species_id.innerHTML = species.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
+  state.plantSpecies = species;
   $("#device-list").innerHTML = devices
     .filter((d) => d.plant_id === null || d.plant_id === plant?.id)
     .map((d) => `<option value="${esc(d.device_id)}">`).join("");
@@ -531,8 +535,19 @@ async function openPlantDialog(plant, presetDevice = "") {
   form.soil_dry_raw.value = plant?.soil_dry_raw ?? 2800;
   form.soil_wet_raw.value = plant?.soil_wet_raw ?? 1200;
   form.alerts.checked = plant?.alerts ?? true;
+  form.dormant.checked = plant?.dormant ?? false;
+  updateDormantOption();
   $("#plant-dialog").showModal();
 }
+
+// The dormant switch only makes sense for species with dormancy ranges.
+function updateDormantOption() {
+  const form = $("#plant-form");
+  const s = state.plantSpecies.find((s) => s.id === Number(form.species_id.value));
+  $("#dormant-option").hidden = !s?.dormancy;
+}
+
+$("#plant-form").species_id.addEventListener("change", updateDormantOption);
 
 $("#plant-form").addEventListener("click", async (e) => {
   const btn = e.target.closest("[data-calibrate]");
@@ -562,6 +577,7 @@ $("#plant-form").addEventListener("submit", async (e) => {
     soil_dry_raw: Number(form.soil_dry_raw.value),
     soil_wet_raw: Number(form.soil_wet_raw.value),
     alerts: form.alerts.checked,
+    dormant: form.dormant.checked,
   };
   const editing = state.editingPlant;
   try {
@@ -593,6 +609,7 @@ async function loadSpecies() {
       <td>${rangeText(s.humidity, "%")}</td>
       <td>${rangeText(s.light_lux, "lx")}</td>
       <td>${rangeText(s.soil_moisture, "%")}</td>
+      <td>${s.dormancy ? `${rangeText(s.dormancy.temperature, "°C")}, soil ${rangeText(s.dormancy.soil_moisture, "%")}` : "—"}</td>
       <td class="actions">
         <button type="button" class="small" data-edit="${s.id}">Edit</button>
         <button type="button" class="small danger" data-delete="${s.id}">Delete</button>
@@ -600,12 +617,26 @@ async function loadSpecies() {
     </tr>`).join("");
 }
 
-$("#species-ranges").innerHTML =
-  `<span></span><span class="head">Min</span><span class="head">Max</span>` +
-  RANGES.map((r) => `
-    <span>${r.label}</span>
-    <input type="number" name="${r.key}_min" step="${r.step}" required aria-label="${r.label} min">
-    <input type="number" name="${r.key}_max" step="${r.step}" required aria-label="${r.label} max">`).join("");
+// Min/max inputs for every range, named `${prefix}${key}_min` / `_max`.
+function rangeInputs(prefix) {
+  return `<span></span><span class="head">Min</span><span class="head">Max</span>` +
+    RANGES.map((r) => `
+      <span>${r.label}</span>
+      <input type="number" name="${prefix}${r.key}_min" step="${r.step}" required aria-label="${r.label} min">
+      <input type="number" name="${prefix}${r.key}_max" step="${r.step}" required aria-label="${r.label} max">`).join("");
+}
+
+$("#species-ranges").innerHTML = rangeInputs("");
+$("#dormancy-ranges").innerHTML = rangeInputs("dorm_");
+
+// Hidden dormancy inputs are disabled so they skip validation and submission.
+function updateDormancyFields() {
+  const fields = $("#dormancy-fields");
+  fields.hidden = !$("#species-form").has_dormancy.checked;
+  fields.disabled = fields.hidden;
+}
+
+$("#species-form").has_dormancy.addEventListener("change", updateDormancyFields);
 
 $("#add-species").addEventListener("click", () => openSpeciesDialog(null));
 $("#species-table").addEventListener("click", async (e) => {
@@ -637,16 +668,23 @@ function openSpeciesDialog(species) {
   for (const r of RANGES) {
     form[`${r.key}_min`].value = species?.[r.key][0] ?? "";
     form[`${r.key}_max`].value = species?.[r.key][1] ?? "";
+    form[`dorm_${r.key}_min`].value = species?.dormancy?.[r.key][0] ?? "";
+    form[`dorm_${r.key}_max`].value = species?.dormancy?.[r.key][1] ?? "";
   }
+  form.has_dormancy.checked = Boolean(species?.dormancy);
+  updateDormancyFields();
   $("#species-dialog").showModal();
 }
 
 $("#species-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const form = e.target;
-  const body = { name: form.name.value.trim(), notes: form.notes.value.trim() };
+  const body = { name: form.name.value.trim(), notes: form.notes.value.trim(), dormancy: null };
+  const range = (name) => [Number(form[`${name}_min`].value), Number(form[`${name}_max`].value)];
+  if (form.has_dormancy.checked) body.dormancy = {};
   for (const r of RANGES) {
-    body[r.key] = [Number(form[`${r.key}_min`].value), Number(form[`${r.key}_max`].value)];
+    body[r.key] = range(r.key);
+    if (body.dormancy) body.dormancy[r.key] = range(`dorm_${r.key}`);
   }
   const editing = state.editingSpecies;
   try {

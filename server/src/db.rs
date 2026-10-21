@@ -5,7 +5,7 @@ use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 
-use crate::model::{self, Plant, Species};
+use crate::model::{self, Plant, Ranges, Species};
 
 /// A reading as sent by a sensor node. Fields are optional so a single
 /// failed sensor doesn't drop the whole measurement.
@@ -77,7 +77,12 @@ const SCHEMA: &str = "
         hum_min   REAL NOT NULL, hum_max   REAL NOT NULL,
         light_min REAL NOT NULL, light_max REAL NOT NULL,
         soil_min  REAL NOT NULL, soil_max  REAL NOT NULL,
-        notes     TEXT NOT NULL DEFAULT ''
+        notes     TEXT NOT NULL DEFAULT '',
+        -- Dormancy ranges: all NULL when the species has no dormancy.
+        dorm_temp_min  REAL, dorm_temp_max  REAL,
+        dorm_hum_min   REAL, dorm_hum_max   REAL,
+        dorm_light_min REAL, dorm_light_max REAL,
+        dorm_soil_min  REAL, dorm_soil_max  REAL
     );
 
     CREATE TABLE IF NOT EXISTS plants (
@@ -88,7 +93,8 @@ const SCHEMA: &str = "
         species_id   INTEGER NOT NULL REFERENCES species (id),
         soil_dry_raw INTEGER NOT NULL,
         soil_wet_raw INTEGER NOT NULL,
-        alerts       INTEGER NOT NULL DEFAULT 1
+        alerts       INTEGER NOT NULL DEFAULT 1,
+        dormant      INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS users (
@@ -125,9 +131,25 @@ const SCHEMA: &str = "
 
 const READING_COLUMNS: &str = "ts, temperature, humidity, lux, soil_raw, rssi";
 const SPECIES_COLUMNS: &str =
-    "id, name, temp_min, temp_max, hum_min, hum_max, light_min, light_max, soil_min, soil_max, notes";
+    "id, name, temp_min, temp_max, hum_min, hum_max, light_min, light_max, soil_min, soil_max, notes,
+     dorm_temp_min, dorm_temp_max, dorm_hum_min, dorm_hum_max,
+     dorm_light_min, dorm_light_max, dorm_soil_min, dorm_soil_max";
 const PLANT_COLUMNS: &str =
-    "id, name, location, device_id, species_id, soil_dry_raw, soil_wet_raw, alerts";
+    "id, name, location, device_id, species_id, soil_dry_raw, soil_wet_raw, alerts, dormant";
+
+/// Columns added after the first release, as (table, column, definition).
+const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
+    ("users", "weak_password", "INTEGER NOT NULL DEFAULT 0"),
+    ("plants", "dormant", "INTEGER NOT NULL DEFAULT 0"),
+    ("species", "dorm_temp_min", "REAL"),
+    ("species", "dorm_temp_max", "REAL"),
+    ("species", "dorm_hum_min", "REAL"),
+    ("species", "dorm_hum_max", "REAL"),
+    ("species", "dorm_light_min", "REAL"),
+    ("species", "dorm_light_max", "REAL"),
+    ("species", "dorm_soil_min", "REAL"),
+    ("species", "dorm_soil_max", "REAL"),
+];
 
 fn map_user(r: &Row) -> rusqlite::Result<User> {
     Ok(User { id: r.get(0)?, name: r.get(1)?, password_hash: r.get(2)?, weak_password: r.get(3)? })
@@ -153,7 +175,32 @@ fn map_species(row: &Row) -> rusqlite::Result<Species> {
         light_lux: [row.get(6)?, row.get(7)?],
         soil_moisture: [row.get(8)?, row.get(9)?],
         notes: row.get(10)?,
+        dormancy: map_dormancy(row, 11)?,
     })
+}
+
+/// Dormancy ranges stored as 8 nullable columns starting at `offset`.
+fn map_dormancy(row: &Row, offset: usize) -> rusqlite::Result<Option<Ranges>> {
+    let v: Vec<Option<f64>> = (offset..offset + 8).map(|i| row.get(i)).collect::<rusqlite::Result<_>>()?;
+    let Some(v) = v.into_iter().collect::<Option<Vec<f64>>>() else { return Ok(None) };
+    Ok(Some(Ranges {
+        temperature: [v[0], v[1]],
+        humidity: [v[2], v[3]],
+        light_lux: [v[4], v[5]],
+        soil_moisture: [v[6], v[7]],
+    }))
+}
+
+/// The 8 dormancy columns' values (all NULL without dormancy).
+fn dormancy_params(d: &Option<Ranges>) -> [Option<f64>; 8] {
+    match d {
+        Some(d) => [
+            d.temperature[0], d.temperature[1], d.humidity[0], d.humidity[1],
+            d.light_lux[0], d.light_lux[1], d.soil_moisture[0], d.soil_moisture[1],
+        ]
+        .map(Some),
+        None => [None; 8],
+    }
 }
 
 fn map_plant(row: &Row) -> rusqlite::Result<Plant> {
@@ -166,6 +213,7 @@ fn map_plant(row: &Row) -> rusqlite::Result<Plant> {
         soil_dry_raw: row.get(5)?,
         soil_wet_raw: row.get(6)?,
         alerts: row.get(7)?,
+        dormant: row.get(8)?,
     })
 }
 
@@ -177,14 +225,16 @@ impl Db {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
         conn.execute_batch(SCHEMA)?;
-        // Added after the first release; older databases lack the column.
-        let has_weak: bool = conn.query_row(
-            "SELECT COUNT(*) > 0 FROM pragma_table_info('users') WHERE name = 'weak_password'",
-            [],
-            |r| r.get(0),
-        )?;
-        if !has_weak {
-            conn.execute_batch("ALTER TABLE users ADD COLUMN weak_password INTEGER NOT NULL DEFAULT 0")?;
+        // Older databases lack the columns added since the first release.
+        for (table, column, definition) in ADDED_COLUMNS {
+            let exists: bool = conn.query_row(
+                "SELECT COUNT(*) > 0 FROM pragma_table_info(?1) WHERE name = ?2",
+                [table, column],
+                |r| r.get(0),
+            )?;
+            if !exists {
+                conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"))?;
+            }
         }
         let db = Self(Mutex::new(conn));
         if db.species_list()?.is_empty() {
@@ -272,27 +322,35 @@ impl Db {
     }
 
     pub fn species_insert(&self, s: &Species) -> Result<i64> {
+        let d = dormancy_params(&s.dormancy);
         let conn = self.conn();
         conn.execute(
             "INSERT INTO species (name, temp_min, temp_max, hum_min, hum_max,
-                                  light_min, light_max, soil_min, soil_max, notes)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                                  light_min, light_max, soil_min, soil_max, notes,
+                                  dorm_temp_min, dorm_temp_max, dorm_hum_min, dorm_hum_max,
+                                  dorm_light_min, dorm_light_max, dorm_soil_min, dorm_soil_max)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 s.name, s.temperature[0], s.temperature[1], s.humidity[0], s.humidity[1],
-                s.light_lux[0], s.light_lux[1], s.soil_moisture[0], s.soil_moisture[1], s.notes
+                s.light_lux[0], s.light_lux[1], s.soil_moisture[0], s.soil_moisture[1], s.notes,
+                d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]
             ],
         )?;
         Ok(conn.last_insert_rowid())
     }
 
     pub fn species_update(&self, id: i64, s: &Species) -> Result<bool> {
+        let d = dormancy_params(&s.dormancy);
         let n = self.conn().execute(
             "UPDATE species SET name = ?2, temp_min = ?3, temp_max = ?4, hum_min = ?5, hum_max = ?6,
-                    light_min = ?7, light_max = ?8, soil_min = ?9, soil_max = ?10, notes = ?11
+                    light_min = ?7, light_max = ?8, soil_min = ?9, soil_max = ?10, notes = ?11,
+                    dorm_temp_min = ?12, dorm_temp_max = ?13, dorm_hum_min = ?14, dorm_hum_max = ?15,
+                    dorm_light_min = ?16, dorm_light_max = ?17, dorm_soil_min = ?18, dorm_soil_max = ?19
              WHERE id = ?1",
             params![
                 id, s.name, s.temperature[0], s.temperature[1], s.humidity[0], s.humidity[1],
-                s.light_lux[0], s.light_lux[1], s.soil_moisture[0], s.soil_moisture[1], s.notes
+                s.light_lux[0], s.light_lux[1], s.soil_moisture[0], s.soil_moisture[1], s.notes,
+                d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]
             ],
         )?;
         Ok(n > 0)
@@ -320,9 +378,9 @@ impl Db {
     pub fn plant_insert(&self, p: &Plant) -> Result<i64> {
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO plants (name, location, device_id, species_id, soil_dry_raw, soil_wet_raw, alerts)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![p.name, p.location, p.device_id, p.species_id, p.soil_dry_raw, p.soil_wet_raw, p.alerts],
+            "INSERT INTO plants (name, location, device_id, species_id, soil_dry_raw, soil_wet_raw, alerts, dormant)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![p.name, p.location, p.device_id, p.species_id, p.soil_dry_raw, p.soil_wet_raw, p.alerts, p.dormant],
         )?;
         Ok(conn.last_insert_rowid())
     }
@@ -330,9 +388,9 @@ impl Db {
     pub fn plant_update(&self, id: i64, p: &Plant) -> Result<bool> {
         let n = self.conn().execute(
             "UPDATE plants SET name = ?2, location = ?3, device_id = ?4, species_id = ?5,
-                    soil_dry_raw = ?6, soil_wet_raw = ?7, alerts = ?8
+                    soil_dry_raw = ?6, soil_wet_raw = ?7, alerts = ?8, dormant = ?9
              WHERE id = ?1",
-            params![id, p.name, p.location, p.device_id, p.species_id, p.soil_dry_raw, p.soil_wet_raw, p.alerts],
+            params![id, p.name, p.location, p.device_id, p.species_id, p.soil_dry_raw, p.soil_wet_raw, p.alerts, p.dormant],
         )?;
         Ok(n > 0)
     }

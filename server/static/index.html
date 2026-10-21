@@ -91,7 +91,7 @@
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>Name</th><th>Temperature</th><th>Humidity</th><th>Light</th><th>Soil moisture</th><th></th></tr>
+              <tr><th>Name</th><th>Temperature</th><th>Humidity</th><th>Light</th><th>Soil moisture</th><th>Dormancy</th><th></th></tr>
             </thead>
             <tbody id="species-table"></tbody>
           </table>
@@ -188,6 +188,7 @@
         <p id="calib-hint" class="muted small"></p>
       </fieldset>
       <label class="check"><input type="checkbox" name="alerts"> Send notifications for this plant</label>
+      <label class="check" id="dormant-option"><input type="checkbox" name="dormant"> Dormant: use the species' dormancy ranges</label>
       <p class="error form-error" hidden></p>
       <div class="actions">
         <button type="button" class="cancel">Cancel</button>
@@ -204,6 +205,12 @@
       </div>
       <label>Name <input name="name" required maxlength="80"></label>
       <div id="species-ranges" class="ranges"></div>
+      <label class="check"><input type="checkbox" name="has_dormancy"> Has a dormancy period (e.g. cactus winter rest)</label>
+      <fieldset id="dormancy-fields" hidden>
+        <legend>Dormancy ranges</legend>
+        <p class="muted small">Used instead of the ranges above for plants marked dormant.</p>
+        <div id="dormancy-ranges" class="ranges"></div>
+      </fieldset>
       <label>Notes <textarea name="notes" rows="2" maxlength="500"></textarea></label>
       <p class="error form-error" hidden></p>
       <div class="actions">

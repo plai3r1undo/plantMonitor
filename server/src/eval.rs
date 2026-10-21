@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use crate::model::{Range, Species};
+use crate::model::{Range, Ranges};
 
 /// Readings below this many lux count as "dark" and are excluded from the
 /// light average, so nights don't make every plant look under-lit.
@@ -75,14 +75,14 @@ fn check(
     Check { metric, label, unit, value, min, max, status, advice }
 }
 
-pub fn evaluate(species: &Species, c: &Conditions) -> Vec<Check> {
+pub fn evaluate(ranges: &Ranges, c: &Conditions) -> Vec<Check> {
     vec![
         check(
             "soil_moisture",
             "Soil moisture",
             "%",
             c.soil_moisture,
-            species.soil_moisture,
+            ranges.soil_moisture,
             "Soil is too dry — water the plant.",
             "Soil is too wet — hold off watering and check drainage.",
         ),
@@ -91,7 +91,7 @@ pub fn evaluate(species: &Species, c: &Conditions) -> Vec<Check> {
             "Light (daylight avg)",
             "lx",
             c.light_lux,
-            species.light_lux,
+            ranges.light_lux,
             "Not enough light — move closer to a window or add a grow light.",
             "Too much light — move away from direct sun or add a sheer curtain.",
         ),
@@ -100,7 +100,7 @@ pub fn evaluate(species: &Species, c: &Conditions) -> Vec<Check> {
             "Temperature",
             "°C",
             c.temperature,
-            species.temperature,
+            ranges.temperature,
             "Too cold — move away from drafts and cold windows.",
             "Too hot — move away from heaters or direct afternoon sun.",
         ),
@@ -109,7 +109,7 @@ pub fn evaluate(species: &Species, c: &Conditions) -> Vec<Check> {
             "Humidity",
             "%",
             c.humidity,
-            species.humidity,
+            ranges.humidity,
             "Air is too dry — group plants, use a pebble tray or humidifier.",
             "Air is too humid — improve air circulation.",
         ),

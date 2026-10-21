@@ -21,6 +21,19 @@ pub struct Species {
     pub soil_moisture: Range,
     #[serde(default)]
     pub notes: String,
+    /// Optimal ranges while the plant rests (e.g. cactus winter dormancy).
+    /// Used instead of the ranges above for plants marked dormant.
+    #[serde(default)]
+    pub dormancy: Option<Ranges>,
+}
+
+/// One set of optimal ranges, as used for evaluation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Ranges {
+    pub temperature: Range,
+    pub humidity: Range,
+    pub light_lux: Range,
+    pub soil_moisture: Range,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +53,9 @@ pub struct Plant {
     /// Send notifications for this plant.
     #[serde(default = "yes")]
     pub alerts: bool,
+    /// Resting: evaluate against the species' dormancy ranges, if it has any.
+    #[serde(default)]
+    pub dormant: bool,
 }
 
 fn yes() -> bool {
@@ -87,15 +103,36 @@ fn check_range(field: &str, [lo, hi]: Range, min: f64, max: f64) -> Result<(), S
     Ok(())
 }
 
+fn check_ranges(prefix: &str, [temperature, humidity, light_lux, soil_moisture]: [Range; 4]) -> Result<(), String> {
+    check_range(&format!("{prefix}temperature"), temperature, -30.0, 60.0)?;
+    check_range(&format!("{prefix}humidity"), humidity, 0.0, 100.0)?;
+    check_range(&format!("{prefix}light_lux"), light_lux, 0.0, 200_000.0)?;
+    check_range(&format!("{prefix}soil_moisture"), soil_moisture, 0.0, 100.0)
+}
+
 impl Species {
     pub fn validate(&self) -> Result<(), String> {
         check_text("name", &self.name, true, 80)?;
         check_text("notes", &self.notes, false, 500)?;
-        check_range("temperature", self.temperature, -30.0, 60.0)?;
-        check_range("humidity", self.humidity, 0.0, 100.0)?;
-        check_range("light_lux", self.light_lux, 0.0, 200_000.0)?;
-        check_range("soil_moisture", self.soil_moisture, 0.0, 100.0)?;
+        check_ranges("", [self.temperature, self.humidity, self.light_lux, self.soil_moisture])?;
+        if let Some(d) = &self.dormancy {
+            check_ranges("dormancy ", [d.temperature, d.humidity, d.light_lux, d.soil_moisture])?;
+        }
         Ok(())
+    }
+
+    /// The ranges that apply to `plant` right now: the dormancy ones while it
+    /// is marked dormant and the species defines them.
+    pub fn ranges_for(&self, plant: &Plant) -> Ranges {
+        match &self.dormancy {
+            Some(d) if plant.dormant => d.clone(),
+            _ => Ranges {
+                temperature: self.temperature,
+                humidity: self.humidity,
+                light_lux: self.light_lux,
+                soil_moisture: self.soil_moisture,
+            },
+        }
     }
 }
 
@@ -132,6 +169,30 @@ mod tests {
     }
 
     #[test]
+    fn dormancy_ranges_apply_only_to_dormant_plants() {
+        let all = default_species();
+        let cactus = all.iter().find(|s| s.name.starts_with("San Pedro")).unwrap();
+        let dormancy = cactus.dormancy.as_ref().unwrap();
+        let mut p = Plant {
+            id: 0,
+            name: "San Pedro".into(),
+            location: String::new(),
+            device_id: "plant-a1b2c3".into(),
+            species_id: 1,
+            soil_dry_raw: 2800,
+            soil_wet_raw: 1200,
+            alerts: true,
+            dormant: false,
+        };
+        assert_eq!(cactus.ranges_for(&p).temperature, cactus.temperature);
+        p.dormant = true;
+        assert_eq!(cactus.ranges_for(&p).temperature, dormancy.temperature);
+        // A species without dormancy ignores the flag.
+        let monstera = all.iter().find(|s| s.dormancy.is_none()).unwrap();
+        assert_eq!(monstera.ranges_for(&p).temperature, monstera.temperature);
+    }
+
+    #[test]
     fn plant_validation() {
         let mut p = Plant {
             id: 0,
@@ -142,6 +203,7 @@ mod tests {
             soil_dry_raw: 2800,
             soil_wet_raw: 1200,
             alerts: true,
+            dormant: false,
         };
         assert!(p.validate().is_ok());
         p.device_id = "bad id; drop".into();

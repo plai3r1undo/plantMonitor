@@ -54,6 +54,8 @@ pub struct PlantStatus {
     #[serde(flatten)]
     pub plant: Plant,
     pub species_info: Species,
+    /// Evaluated against the species' dormancy ranges.
+    pub dormancy_active: bool,
     pub status: Overall,
     pub last_seen: Option<i64>,
     pub latest: Option<ReadingOut>,
@@ -72,12 +74,14 @@ pub fn plant_status(db: &Db, plant: Plant, species: Species, offline_after_secs:
         light_lux: light,
         soil_moisture: latest.as_ref().and_then(|r| r.soil_moisture),
     };
-    let checks = eval::evaluate(&species, &conditions);
+    let checks = eval::evaluate(&species.ranges_for(&plant), &conditions);
+    let dormancy_active = plant.dormant && species.dormancy.is_some();
     let last_seen = latest.as_ref().map(|r| r.timestamp);
     Ok(PlantStatus {
         status: eval::overall(last_seen, now, offline_after_secs, &checks),
         plant,
         species_info: species,
+        dormancy_active,
         last_seen,
         latest,
         checks,

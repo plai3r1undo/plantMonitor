@@ -6,6 +6,9 @@
 #   humidity      % relative humidity
 #   light_lux     average lux while lit (readings < 50 lx are ignored), last 24 h
 #   soil_moisture % (0 = sensor in dry air, 100 = sensor in water)
+#
+# An optional [species.dormancy] table holds the same four ranges for the rest
+# period (e.g. cactus winter dormancy). They apply to plants marked dormant.
 
 [[species]]
 name = "Monstera deliciosa"
@@ -57,6 +60,26 @@ temperature = [15.0, 32.0]
 humidity = [20.0, 50.0]
 light_lux = [10000.0, 50000.0]
 soil_moisture = [10.0, 40.0]
+
+[species.dormancy]
+temperature = [5.0, 15.0]
+humidity = [20.0, 50.0]
+light_lux = [5000.0, 50000.0]
+soil_moisture = [0.0, 15.0]
+
+[[species]]
+name = "San Pedro (Echinopsis pachanoi)"
+temperature = [15.0, 32.0]
+humidity = [20.0, 60.0]
+light_lux = [10000.0, 60000.0]
+soil_moisture = [10.0, 40.0]
+notes = "Full sun; water deeply only once the soil is completely dry. Winter dormancy (about Nov–Feb): keep cool (5–13 °C), bright and almost dry; this prevents etiolation and helps it flower."
+
+[species.dormancy]
+temperature = [5.0, 13.0]
+humidity = [20.0, 50.0]
+light_lux = [5000.0, 60000.0]
+soil_moisture = [0.0, 15.0]
 
 [[species]]
 name = "Basil"

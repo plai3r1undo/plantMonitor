@@ -1,5 +1,12 @@
 #pragma once
 
+// ---- Which sensors are connected (1 = yes, 0 = no) -----------------------
+// A sensor set to 0 is reported as "no value" instead of a bogus reading
+// (an unconnected soil pin reads random noise).
+#define HAS_DHT22 1
+#define HAS_BH1750 1
+#define HAS_SOIL_SENSOR 1
+
 // ---- Wiring --------------------------------------------------------------
 // DHT22 data pin (add a 10k pull-up to 3V3 if your module doesn't have one)
 #define DHT_PIN 4

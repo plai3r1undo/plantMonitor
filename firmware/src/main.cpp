@@ -72,15 +72,21 @@ static Reading readSensors() {
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   dht.begin();
 
+#if HAS_BH1750
   r.lux = readLux();
+#endif
+#if HAS_SOIL_SENSOR
   r.soilRaw = readSoilRaw();
+#endif
 
+#if HAS_DHT22
   // The DHT22 needs ~2 s after power-up and at most one read per 2 s.
   for (int attempt = 0; attempt < 2 && (isnan(r.temperature) || isnan(r.humidity)); attempt++) {
     delay(2100);
     r.temperature = dht.readTemperature();
     r.humidity = dht.readHumidity();
   }
+#endif
 
 #if SENSOR_POWER_PIN >= 0
   digitalWrite(SENSOR_POWER_PIN, LOW);

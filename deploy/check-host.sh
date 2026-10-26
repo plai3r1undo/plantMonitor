@@ -82,6 +82,7 @@ if have ss; then
     case "$host" in 127.*|'[::1]'|'::1') continue ;; esac
     case "$port" in
       22|80|443) pass "$proto $addr $proc" ;;
+      546) [[ $proto == udp ]] && pass "$proto $addr $proc (DHCPv6 client)" || warn "$proto $addr $proc: unexpected public listener" ;;
       8080) fail "$proto $addr $proc: plant-server must listen on 127.0.0.1 only" ;;
       *) warn "$proto $addr $proc: unexpected public listener" ;;
     esac
@@ -121,7 +122,7 @@ if systemctl is-active -q plant-server 2>/dev/null; then
   user=$(systemctl show -p User --value plant-server)
   [[ $user == plantmon ]] && pass "runs as unprivileged user plantmon" || fail "runs as '${user:-root}' (should be plantmon)"
   if have systemd-analyze; then
-    score=$(systemd-analyze security plant-server 2>/dev/null | awk '/Overall exposure level/ {print $(NF-1)}')
+    score=$(systemd-analyze security plant-server 2>/dev/null | awk '/Overall exposure level/ {for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+\.[0-9]+$/) print $i}')
     [[ -n $score ]] && { awk -v s="$score" 'BEGIN{exit !(s<=3.0)}' && pass "systemd sandbox exposure $score (lower is better)" \
       || warn "systemd sandbox exposure $score; was the unit file changed?"; }
   fi
@@ -157,8 +158,11 @@ if systemctl is-active -q caddy 2>/dev/null; then
   pass "caddy running"
   [[ $(systemctl show -p User --value caddy) == caddy ]] && pass "caddy runs as user caddy" || warn "caddy not running as user caddy"
   if have curl; then
-    hdr=$(curl -skI --max-time 5 https://localhost/ 2>/dev/null || true)
-    grep -qi '^strict-transport-security' <<<"$hdr" && pass "HSTS header present" || warn "no HSTS header from https://localhost/"
+    # Ask for the first site in the Caddyfile by name; plain localhost matches no site.
+    site=$(awk '/^[^[:space:]#({]/ && /\{[[:space:]]*$/ {print $1; exit}' /etc/caddy/Caddyfile 2>/dev/null)
+    site=${site:-localhost}
+    hdr=$(curl -skI --max-time 5 --resolve "$site:443:127.0.0.1" "https://$site/" 2>/dev/null || true)
+    grep -qi '^strict-transport-security' <<<"$hdr" && pass "HSTS header present on $site" || warn "no HSTS header from https://$site/"
   fi
 else
   fail "caddy not running"

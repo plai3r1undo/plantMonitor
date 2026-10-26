@@ -1,0 +1,29 @@
+# Local toolchain installed by build.sh
+/.tools/
+
+# Firmware
+/firmware/.pio/
+/firmware/include/secrets.h
+
+# Server
+/server/target/
+/server/config.toml
+*.db
+*.db-wal
+*.db-shm
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Generated from firmware/root_ca.pem by build.sh
+/firmware/include/root_ca.h
+
+# KiCad: generated / local files (regenerate with hardware/pcb/generate_pcb.py)
+/hardware/pcb/fab/
+/hardware/pcb/drc.rpt
+*.kicad_prl
+*-backups/
+fp-info-cache

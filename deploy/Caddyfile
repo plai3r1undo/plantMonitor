@@ -1,0 +1,46 @@
+# Caddy reverse proxy in front of plant-server: terminates HTTPS and passes
+# requests to the server on loopback. Copy to /etc/caddy/Caddyfile.
+#
+# Site 1 (always): a LAN-only name used by the sensors and by browsers at
+# home. Site 2 (optional): a public name, only if you want the web UI from
+# the internet. Sensors never use site 2.
+
+{
+	# The certificate authority below is trusted by the sensors (pinned in the
+	# firmware) and by devices you import it into, not system-wide here.
+	skip_install_trust
+}
+
+(plant_server) {
+	request_body {
+		max_size 64KB
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	reverse_proxy 127.0.0.1:8080
+}
+
+# --- Site 1: LAN (required) --------------------------------------------------
+# Caddy acts as its own certificate authority, so no domain or internet access
+# is needed. Give the name a DNS entry on your router pointing at this machine,
+# or use the machine's fixed IP instead of a name (e.g. 192.168.10.5 { ... }).
+# Its root certificate goes into firmware/root_ca.pem (see README), and into
+# your browser/phone if you want them to trust it:
+#   /var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt
+plants.home.arpa {
+	tls internal
+	import plant_server
+}
+
+# --- Site 2: public web UI (optional) ----------------------------------------
+# Only if you want to open the dashboard from outside. Caddy gets a free
+# Let's Encrypt certificate; the domain must point at your public IP with
+# ports 80 and 443 forwarded to this machine. The sensor endpoint is not
+# served here (the server also refuses readings from non-LAN addresses).
+#
+# plants.example.com {
+# 	respond /api/readings 404
+# 	import plant_server
+# }

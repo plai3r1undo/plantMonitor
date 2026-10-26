@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Plant Monitor</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌱</text></svg>">
+</head>
+<body>
+  <!-- ------------------------------------------------------------ login -->
+  <div id="login-view" class="login" hidden>
+    <form id="login-form" class="login-box">
+      <h1>🌱 Plant Monitor</h1>
+      <label>Username <input name="username" autocomplete="username" required maxlength="64"></label>
+      <label>Password <input name="password" type="password" autocomplete="current-password" required maxlength="256"></label>
+      <p id="login-error" class="error" hidden></p>
+      <button class="primary" type="submit">Log in</button>
+    </form>
+  </div>
+
+  <!-- ------------------------------------------------------------ app -->
+  <div id="app-view" hidden>
+    <header class="topbar">
+      <h1>🌱 Plant Monitor</h1>
+      <nav>
+        <a href="#dashboard" data-view="dashboard">Dashboard</a>
+        <a href="#plants" data-view="plants">Plants</a>
+        <a href="#species" data-view="species">Species</a>
+        <a href="#settings" data-view="settings">Settings</a>
+      </nav>
+      <div class="topbar-right">
+        <span id="user" class="muted"></span>
+        <button id="logout" type="button">Log out</button>
+      </div>
+    </header>
+
+    <main>
+      <p id="error" class="error" hidden></p>
+      <p id="weak-password" class="notice" hidden>
+        <strong>Your password is weak.</strong> It is shorter than 12 characters and easy to guess.
+        <a href="#settings">Change it in Settings</a>.
+      </p>
+
+      <!-- Dashboard -->
+      <section id="view-dashboard" class="view">
+        <div class="view-head">
+          <span id="summary" class="muted"></span>
+          <button id="refresh" type="button" title="Refresh now">↻ Refresh</button>
+        </div>
+        <div id="cards" class="grid" aria-live="polite"></div>
+        <p id="empty" class="muted" hidden>No plants yet. Go to <a href="#plants">Plants</a> to add one.</p>
+
+        <section id="devices-section" hidden>
+          <h2>Unassigned devices</h2>
+          <p class="muted">These sensor nodes are sending data but aren't linked to a plant yet.</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Device</th><th>Last seen</th><th>Temp</th><th>Humidity</th><th>Light</th><th>Soil raw</th><th>RSSI</th><th></th></tr>
+              </thead>
+              <tbody id="devices"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <!-- Plants -->
+      <section id="view-plants" class="view" hidden>
+        <div class="view-head">
+          <h2>Plants</h2>
+          <button id="add-plant" class="primary" type="button">+ Add plant</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Name</th><th>Location</th><th>Species</th><th>Device</th><th>Soil dry / wet</th><th>Alerts</th><th></th></tr>
+            </thead>
+            <tbody id="plants-table"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Species -->
+      <section id="view-species" class="view" hidden>
+        <div class="view-head">
+          <h2>Species</h2>
+          <button id="add-species" class="primary" type="button">+ Add species</button>
+        </div>
+        <p class="muted">Optimal ranges each plant is compared with. Light is the average while lit (readings under 50 lx ignored) over the last 24 h.</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Name</th><th>Temperature</th><th>Humidity</th><th>Light</th><th>Soil moisture</th><th>Dormancy</th><th></th></tr>
+            </thead>
+            <tbody id="species-table"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Settings -->
+      <section id="view-settings" class="view" hidden>
+        <div class="panel">
+          <h2>Notifications</h2>
+          <div id="ntfy-status" class="muted"></div>
+          <button id="ntfy-test" type="button">Send test notification</button>
+        </div>
+
+        <div class="panel">
+          <h2>API tokens</h2>
+          <p class="muted">Read-only tokens for scripts, e.g.
+            <code>curl -H "Authorization: Bearer TOKEN" <span class="origin"></span>/api/plants</code></p>
+          <form id="token-form" class="inline-form">
+            <input name="name" placeholder="Token name, e.g. laptop" required maxlength="60">
+            <button type="submit">Create token</button>
+          </form>
+          <div id="new-token" class="notice" hidden>
+            Copy this token now; it won't be shown again:
+            <code id="new-token-value"></code>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Name</th><th>Created</th><th>Last used</th><th></th></tr></thead>
+              <tbody id="tokens-table"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Change password</h2>
+          <form id="password-form" class="stack-form">
+            <input type="text" name="username" autocomplete="username" hidden>
+            <label>Current password <input type="password" name="current" autocomplete="current-password" required></label>
+            <label>New password <input type="password" name="new" autocomplete="new-password" required minlength="12" maxlength="256"></label>
+            <label>Repeat new password <input type="password" name="repeat" autocomplete="new-password" required minlength="12" maxlength="256"></label>
+            <button type="submit">Change password</button>
+            <p class="muted small">At least 12 characters. All your other sessions will be logged out.</p>
+          </form>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ------------------------------------------------------------ dialogs -->
+  <dialog id="detail">
+    <div class="dialog-head">
+      <div>
+        <h2 id="detail-title"></h2>
+        <p id="detail-sub" class="muted"></p>
+      </div>
+      <button type="button" class="close" aria-label="Close">✕</button>
+    </div>
+    <div class="range-picker" role="group" aria-label="Time range">
+      <button type="button" data-hours="24">24 h</button>
+      <button type="button" data-hours="168">7 d</button>
+      <button type="button" data-hours="720">30 d</button>
+    </div>
+    <div id="charts" class="charts"></div>
+    <p class="muted small">
+      Shaded band = optimal range. The light chart shows instantaneous lux; the status uses the daylight average.
+      Download: <a id="csv-link" href="#">CSV</a> · <a id="json-link" href="#">JSON</a>
+    </p>
+  </dialog>
+
+  <dialog id="plant-dialog">
+    <form id="plant-form" class="stack-form">
+      <div class="dialog-head">
+        <h2 id="plant-dialog-title">Plant</h2>
+        <button type="button" class="close" aria-label="Close">✕</button>
+      </div>
+      <label>Name <input name="name" required maxlength="80"></label>
+      <label>Location <input name="location" maxlength="80" placeholder="e.g. Living room"></label>
+      <label>Species <select name="species_id" required></select></label>
+      <label>Device ID
+        <input name="device_id" required maxlength="64" pattern="[A-Za-z0-9_\-]+" list="device-list" placeholder="plant-a1b2c3">
+      </label>
+      <datalist id="device-list"></datalist>
+      <fieldset>
+        <legend>Soil sensor calibration</legend>
+        <p class="muted small">Raw value with the probe in dry air (0 %) and in a glass of water (100 %).
+          Put the probe in each state, wait for a reading, then press “Use latest”.</p>
+        <div class="calib">
+          <label>Dry <input name="soil_dry_raw" type="number" min="0" max="4095" required></label>
+          <button type="button" data-calibrate="soil_dry_raw">Use latest</button>
+          <label>Wet <input name="soil_wet_raw" type="number" min="0" max="4095" required></label>
+          <button type="button" data-calibrate="soil_wet_raw">Use latest</button>
+        </div>
+        <p id="calib-hint" class="muted small"></p>
+      </fieldset>
+      <label class="check"><input type="checkbox" name="alerts"> Send notifications for this plant</label>
+      <label class="check" id="dormant-option"><input type="checkbox" name="dormant"> Dormant: use the species' dormancy ranges</label>
+      <p class="error form-error" hidden></p>
+      <div class="actions">
+        <button type="button" class="cancel">Cancel</button>
+        <button type="submit" class="primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="species-dialog">
+    <form id="species-form" class="stack-form">
+      <div class="dialog-head">
+        <h2 id="species-dialog-title">Species</h2>
+        <button type="button" class="close" aria-label="Close">✕</button>
+      </div>
+      <label>Name <input name="name" required maxlength="80"></label>
+      <div id="species-ranges" class="ranges"></div>
+      <label class="check"><input type="checkbox" name="has_dormancy"> Has a dormancy period (e.g. cactus winter rest)</label>
+      <fieldset id="dormancy-fields" hidden>
+        <legend>Dormancy ranges</legend>
+        <p class="muted small">Used instead of the ranges above for plants marked dormant.</p>
+        <div id="dormancy-ranges" class="ranges"></div>
+      </fieldset>
+      <label>Notes <textarea name="notes" rows="2" maxlength="500"></textarea></label>
+      <p class="error form-error" hidden></p>
+      <div class="actions">
+        <button type="button" class="cancel">Cancel</button>
+        <button type="submit" class="primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" role="status" hidden></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -76,7 +76,7 @@ pub async fn run(state: Arc<AppState>) {
 fn problems(p: &PlantStatus) -> Vec<(&'static str, String, &'static str, String)> {
     let mut out = Vec::new();
     match p.status {
-        Overall::NoData => {}
+        Overall::NoData | Overall::NoSensor => {}
         Overall::Offline => out.push((
             OFFLINE,
             "Sensor offline".to_string(),
@@ -115,7 +115,7 @@ async fn tick(state: &AppState, ntfy: &Ntfy) -> Result<()> {
         // While offline the readings are stale: only track the offline state
         // and leave the sensor metrics as they were.
         let metrics: &[&str] = match p.status {
-            Overall::NoData => continue,
+            Overall::NoData | Overall::NoSensor => continue,
             Overall::Offline => &[OFFLINE],
             Overall::Ok | Overall::Attention => &METRICS,
         };

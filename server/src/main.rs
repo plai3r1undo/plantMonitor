@@ -5,6 +5,7 @@ mod config;
 mod db;
 mod eval;
 mod model;
+mod soil;
 mod status;
 
 use std::io::IsTerminal;

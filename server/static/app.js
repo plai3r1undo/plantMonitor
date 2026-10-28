@@ -8,6 +8,7 @@ const STATUS_LABEL = {
   attention: "Needs attention",
   offline: "Offline",
   no_data: "No data",
+  no_sensor: "No sensor",
 };
 
 // Charts in the detail dialog: reading field, title, unit, check metric.
@@ -38,6 +39,8 @@ const state = {
   editingPlant: null,
   editingSpecies: null,
   plantSpecies: [], // species offered in the plant dialog
+  plantDevices: [], // devices offered in the plant dialog
+  calib: null, // { plant, since, timer } while the calibration dialog is open
 };
 let refreshTimer = null;
 
@@ -259,6 +262,10 @@ function plantCard(p) {
     </div>`).join("");
   const advice = p.checks.filter((c) => c.advice).map((c) => `<li>${esc(c.advice)}</li>`).join("");
   const sub = [p.species_info.name, p.location, p.dormancy_active && "Dormant"].filter(Boolean).map(esc).join(" · ");
+  const soilHint = {
+    slow: "Soil stays wet too long for this plant: check the mix and drainage.",
+    fast: "Soil dries too fast for this plant: check the mix and pot size.",
+  }[p.soil_drying.verdict];
 
   return `
     <article class="card ${p.status}" tabindex="0" role="button" data-id="${p.id}">
@@ -269,7 +276,8 @@ function plantCard(p) {
       <p class="sub">${sub}</p>
       ${metrics}
       ${advice ? `<ul class="advice">${advice}</ul>` : ""}
-      <div class="card-foot">Last reading ${ago(p.last_seen)} · ${esc(p.device_id)}${p.alerts ? "" : " · alerts off"}</div>
+      ${soilHint ? `<p class="soil-hint">🪴 ${soilHint}</p>` : ""}
+      <div class="card-foot">Last reading ${ago(p.last_seen)} · ${p.device_id ? esc(p.device_id) : "no sensor"}${p.alerts ? "" : " · alerts off"}</div>
     </article>`;
 }
 
@@ -285,8 +293,23 @@ function renderDevices(devices) {
       <td>${fmt(d.latest.lux, "lx")}</td>
       <td>${d.latest.soil_raw ?? "—"}</td>
       <td>${d.latest.rssi != null ? esc(d.latest.rssi) + " dBm" : "—"}</td>
-      <td class="actions"><button type="button" class="small" data-add-device="${esc(d.device_id)}">Add as plant</button></td>
+      <td class="actions">
+        <button type="button" class="small" data-add-device="${esc(d.device_id)}">Add as plant</button>
+        ${d.online ? "" : `<button type="button" class="small danger" data-delete-device="${esc(d.device_id)}">Delete</button>`}
+      </td>
     </tr>`).join("");
+}
+
+async function deleteDevice(id) {
+  const msg = `Delete device ${id}?\n\nIt is removed from its plant (the plant keeps its history) and its other readings are deleted. If it reports again it shows up as a new device.`;
+  if (!confirm(msg)) return;
+  try {
+    await api("DELETE", `/api/devices/${encodeURIComponent(id)}`);
+    toast("Device deleted");
+    route();
+  } catch (err) {
+    toast(err.message, true);
+  }
 }
 
 async function loadDashboard() {
@@ -315,8 +338,10 @@ $("#cards").addEventListener("keydown", (e) => {
   }
 });
 $("#devices").addEventListener("click", (e) => {
-  const btn = e.target.closest("[data-add-device]");
-  if (btn) openPlantDialog(null, btn.dataset.addDevice);
+  const add = e.target.closest("[data-add-device]");
+  const del = e.target.closest("[data-delete-device]");
+  if (add) openPlantDialog(null, add.dataset.addDevice);
+  else if (del) deleteDevice(del.dataset.deleteDevice);
 });
 
 // ------------------------------------------------------------------ detail / charts
@@ -453,6 +478,9 @@ function openDetail(id) {
   $("#detail-title").textContent = plant.name;
   $("#detail-sub").textContent = [plant.species_info.name, plant.location, plant.species_info.notes]
     .filter(Boolean).join(" · ");
+  const soil = $("#detail-soil");
+  soil.className = `soil-note ${plant.soil_drying.verdict}`;
+  soil.innerHTML = `<strong>Soil drying:</strong> ${esc(plant.soil_drying.message)}`;
   $("#detail").showModal();
   loadHistory();
 }
@@ -470,8 +498,9 @@ window.addEventListener("resize", () => {
 // ------------------------------------------------------------------ plants
 
 async function loadPlants() {
-  const plants = await api("GET", "/api/plants");
+  const [plants, devices] = await Promise.all([api("GET", "/api/plants"), api("GET", "/api/devices")]);
   state.plants = plants;
+  renderAllDevices(devices);
   $("#plants-table").innerHTML = plants.length === 0
     ? `<tr><td colspan="7" class="empty">No plants yet. Flash a sensor, then add it here.</td></tr>`
     : plants.map((p) => `
@@ -479,21 +508,45 @@ async function loadPlants() {
         <td>${esc(p.name)}</td>
         <td>${esc(p.location) || "—"}</td>
         <td>${esc(p.species_info.name)}${p.dormancy_active ? " · dormant" : ""}</td>
-        <td><code>${esc(p.device_id)}</code></td>
+        <td>${p.device_id ? `<code>${esc(p.device_id)}</code>` : "—"}</td>
         <td>${p.soil_dry_raw} / ${p.soil_wet_raw}</td>
         <td>${p.alerts ? "On" : "Off"}</td>
         <td class="actions">
+          ${p.device_id ? `<button type="button" class="small" data-calib="${p.id}">Recalibrate</button>` : ""}
           <button type="button" class="small" data-edit="${p.id}">Edit</button>
           <button type="button" class="small danger" data-delete="${p.id}">Delete</button>
         </td>
       </tr>`).join("");
 }
 
+function renderAllDevices(devices) {
+  $("#all-devices").innerHTML = devices.length === 0
+    ? `<tr><td colspan="7" class="empty">No device has reported yet.</td></tr>`
+    : devices.map((d) => `
+      <tr>
+        <td><code>${esc(d.device_id)}</code></td>
+        <td>${d.plant_name ? esc(d.plant_name) : `<span class="muted">unassigned</span>`}</td>
+        <td>${ago(d.last_seen)}${d.online ? "" : ` <span class="muted">(offline)</span>`}</td>
+        <td>${d.readings}</td>
+        <td>${d.latest.soil_raw ?? "—"}</td>
+        <td>${d.latest.rssi != null ? esc(d.latest.rssi) + " dBm" : "—"}</td>
+        <td class="actions">${d.online ? "" : `<button type="button" class="small danger" data-delete-device="${esc(d.device_id)}">Delete</button>`}</td>
+      </tr>`).join("");
+}
+
+$("#all-devices").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-delete-device]");
+  if (btn) deleteDevice(btn.dataset.deleteDevice);
+});
+
 $("#add-plant").addEventListener("click", () => openPlantDialog(null));
 $("#plants-table").addEventListener("click", async (e) => {
   const edit = e.target.closest("[data-edit]");
   const del = e.target.closest("[data-delete]");
-  if (edit) {
+  const calib = e.target.closest("[data-calib]");
+  if (calib) {
+    openCalibration(state.plants.find((p) => p.id === Number(calib.dataset.calib)));
+  } else if (edit) {
     openPlantDialog(state.plants.find((p) => p.id === Number(edit.dataset.edit)));
   } else if (del) {
     const p = state.plants.find((p) => p.id === Number(del.dataset.delete));
@@ -524,9 +577,12 @@ async function openPlantDialog(plant, presetDevice = "") {
   }
   form.species_id.innerHTML = species.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
   state.plantSpecies = species;
+  state.plantDevices = devices;
   $("#device-list").innerHTML = devices
-    .filter((d) => d.plant_id === null || d.plant_id === plant?.id)
-    .map((d) => `<option value="${esc(d.device_id)}">`).join("");
+    .map((d) => {
+      const where = d.plant_id === null ? "unassigned" : d.plant_id === plant?.id ? "this plant" : `in ${d.plant_name}`;
+      return `<option value="${esc(d.device_id)}" label="${esc(where)}">`;
+    }).join("");
 
   form.name.value = plant?.name ?? "";
   form.location.value = plant?.location ?? "";
@@ -548,6 +604,24 @@ function updateDormantOption() {
 }
 
 $("#plant-form").species_id.addEventListener("change", updateDormantOption);
+
+/** The plant other than the one being edited that has this device, if any. */
+function deviceOwner(deviceId) {
+  const d = state.plantDevices.find((d) => d.device_id === deviceId);
+  if (!d || d.plant_id === null || d.plant_id === state.editingPlant?.id) return null;
+  return { id: d.plant_id, name: d.plant_name };
+}
+
+// Calibration belongs to the sensor: a sensor moving here brings its values.
+$("#plant-form").device_id.addEventListener("change", () => {
+  const form = $("#plant-form");
+  const owner = deviceOwner(form.device_id.value.trim());
+  const from = owner && state.plants.find((p) => p.id === owner.id);
+  if (!from) return;
+  form.soil_dry_raw.value = from.soil_dry_raw;
+  form.soil_wet_raw.value = from.soil_wet_raw;
+  $("#calib-hint").textContent = `Calibration copied from “${from.name}”, where this sensor is now.`;
+});
 
 $("#plant-form").addEventListener("click", async (e) => {
   const btn = e.target.closest("[data-calibrate]");
@@ -572,7 +646,7 @@ $("#plant-form").addEventListener("submit", async (e) => {
   const body = {
     name: form.name.value.trim(),
     location: form.location.value.trim(),
-    device_id: form.device_id.value.trim(),
+    device_id: form.device_id.value.trim() || null,
     species_id: Number(form.species_id.value),
     soil_dry_raw: Number(form.soil_dry_raw.value),
     soil_wet_raw: Number(form.soil_wet_raw.value),
@@ -580,6 +654,13 @@ $("#plant-form").addEventListener("submit", async (e) => {
     dormant: form.dormant.checked,
   };
   const editing = state.editingPlant;
+  const owner = body.device_id && deviceOwner(body.device_id);
+  if (owner) {
+    const ok = confirm(`Sensor ${body.device_id} is in “${owner.name}”. Move it here?\n\n` +
+      `“${owner.name}” keeps its history and will have no sensor until you give it one.`);
+    if (!ok) return;
+    body.move_device = true;
+  }
   try {
     if (editing) await api("PUT", `/api/plants/${editing.id}`, body);
     else await api("POST", "/api/plants", body);
@@ -590,6 +671,84 @@ $("#plant-form").addEventListener("submit", async (e) => {
     $(".form-error", form).textContent = err.message;
     $(".form-error", form).hidden = false;
   }
+});
+
+// ------------------------------------------------------------------ calibration
+
+const CALIB_POLL_MS = 3000;
+
+async function openCalibration(plant) {
+  if (!plant) return;
+  const form = $("#calib-form");
+  form.reset();
+  $(".form-error", form).hidden = true;
+  $("#calib-title").textContent = `Recalibrate ${plant.name}`;
+  form.soil_dry_raw.value = plant.soil_dry_raw;
+  form.soil_wet_raw.value = plant.soil_wet_raw;
+  try {
+    await api("POST", `/api/plants/${plant.id}/calibration`);
+  } catch (err) {
+    return toast(err.message, true);
+  }
+  state.calib = { plant, since: Date.now() / 1000, latest: null, timer: setInterval(pollCalibration, CALIB_POLL_MS) };
+  $("#calib-live").textContent = `Waiting for a reading from ${plant.device_id}… Press EN on the ESP32.`;
+  $("#calib-dialog").showModal();
+  pollCalibration();
+}
+
+async function pollCalibration() {
+  const c = state.calib;
+  if (!c) return;
+  try {
+    const devices = await api("GET", "/api/devices");
+    const d = devices.find((d) => d.device_id === c.plant.device_id);
+    if (!d || d.last_seen < c.since || d.latest.soil_raw == null) return;
+    c.latest = d;
+    $("#calib-live").textContent = `Latest reading: raw ${d.latest.soil_raw}, ${ago(d.last_seen)}.`;
+  } catch {
+    // Keep polling; a failed request is shown by the next successful one.
+  }
+}
+
+function endCalibration() {
+  if (!state.calib) return;
+  clearInterval(state.calib.timer);
+  state.calib = null;
+}
+
+$("#calib-form").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-use]");
+  if (!btn) return;
+  const c = state.calib;
+  if (!c?.latest) return toast("No new reading yet: press EN on the ESP32 and wait a few seconds", true);
+  $("#calib-form")[btn.dataset.use].value = c.latest.latest.soil_raw;
+});
+
+$("#calib-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  const plant = state.calib?.plant;
+  if (!plant) return;
+  try {
+    await api("PUT", `/api/plants/${plant.id}/calibration`, {
+      soil_dry_raw: Number(form.soil_dry_raw.value),
+      soil_wet_raw: Number(form.soil_wet_raw.value),
+    });
+    endCalibration();
+    $("#calib-dialog").close();
+    toast("Calibration saved. Put the probe back in the soil.");
+    route();
+  } catch (err) {
+    $(".form-error", form).textContent = err.message;
+    $(".form-error", form).hidden = false;
+  }
+});
+
+// Closing without saving (Cancel, ✕, Esc, backdrop) ends calibration.
+$("#calib-dialog").addEventListener("close", () => {
+  const plant = state.calib?.plant;
+  endCalibration();
+  if (plant) api("DELETE", `/api/plants/${plant.id}/calibration`).catch((err) => toast(err.message, true));
 });
 
 // ------------------------------------------------------------------ species
@@ -609,6 +768,7 @@ async function loadSpecies() {
       <td>${rangeText(s.humidity, "%")}</td>
       <td>${rangeText(s.light_lux, "lx")}</td>
       <td>${rangeText(s.soil_moisture, "%")}</td>
+      <td>${s.drying_days ? rangeText(s.drying_days, "days") : "—"}</td>
       <td>${s.dormancy ? `${rangeText(s.dormancy.temperature, "°C")}, soil ${rangeText(s.dormancy.soil_moisture, "%")}` : "—"}</td>
       <td class="actions">
         <button type="button" class="small" data-edit="${s.id}">Edit</button>
@@ -671,6 +831,8 @@ function openSpeciesDialog(species) {
     form[`dorm_${r.key}_min`].value = species?.dormancy?.[r.key][0] ?? "";
     form[`dorm_${r.key}_max`].value = species?.dormancy?.[r.key][1] ?? "";
   }
+  form.drying_days_min.value = species?.drying_days?.[0] ?? "";
+  form.drying_days_max.value = species?.drying_days?.[1] ?? "";
   form.has_dormancy.checked = Boolean(species?.dormancy);
   updateDormancyFields();
   $("#species-dialog").showModal();
@@ -682,6 +844,13 @@ $("#species-form").addEventListener("submit", async (e) => {
   const body = { name: form.name.value.trim(), notes: form.notes.value.trim(), dormancy: null };
   const range = (name) => [Number(form[`${name}_min`].value), Number(form[`${name}_max`].value)];
   if (form.has_dormancy.checked) body.dormancy = {};
+  const [dryMin, dryMax] = [form.drying_days_min.value, form.drying_days_max.value];
+  if ((dryMin === "") !== (dryMax === "")) {
+    $(".form-error", form).textContent = "Give both drying days, or neither.";
+    $(".form-error", form).hidden = false;
+    return;
+  }
+  body.drying_days = dryMin === "" ? null : [Number(dryMin), Number(dryMax)];
   for (const r of RANGES) {
     body[r.key] = range(r.key);
     if (body.dormancy) body.dormancy[r.key] = range(`dorm_${r.key}`);

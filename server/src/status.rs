@@ -9,6 +9,7 @@ use serde::Serialize;
 use crate::db::{Db, StoredReading};
 use crate::eval::{self, Check, Conditions, Overall};
 use crate::model::{Plant, Species};
+use crate::soil::{self, Drying};
 
 pub fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
@@ -60,13 +61,15 @@ pub struct PlantStatus {
     pub last_seen: Option<i64>,
     pub latest: Option<ReadingOut>,
     pub checks: Vec<Check>,
+    /// Whether the soil dries as fast as the species needs.
+    pub soil_drying: Drying,
 }
 
 pub fn plant_status(db: &Db, plant: Plant, species: Species, offline_after_secs: i64) -> Result<PlantStatus> {
     let now = now();
-    let latest = db.latest(&plant.device_id)?.map(|r| ReadingOut::new(&r, Some(&plant)));
+    let latest = db.latest(plant.id)?.map(|r| ReadingOut::new(&r, Some(&plant)));
     let light = db
-        .daylight_lux(&plant.device_id, now - eval::LIGHT_WINDOW_SECS, eval::DAYLIGHT_LUX)?
+        .daylight_lux(plant.id, now - eval::LIGHT_WINDOW_SECS, eval::DAYLIGHT_LUX)?
         .map(f64::round);
     let conditions = Conditions {
         temperature: latest.as_ref().and_then(|r| r.temperature),
@@ -77,8 +80,17 @@ pub fn plant_status(db: &Db, plant: Plant, species: Species, offline_after_secs:
     let checks = eval::evaluate(&species.ranges_for(&plant), &conditions);
     let dormancy_active = plant.dormant && species.dormancy.is_some();
     let last_seen = latest.as_ref().map(|r| r.timestamp);
+    // 0 and 4095 are a disconnected sensor, not soil.
+    let soil: Vec<_> = db
+        .soil_history(plant.id, now - soil::WINDOW_SECS)?
+        .into_iter()
+        .filter(|&(_, raw)| raw > 0 && raw < 4095)
+        .map(|(ts, raw)| (ts, eval::soil_percent(raw, plant.soil_dry_raw, plant.soil_wet_raw)))
+        .collect();
+    let soil_drying = soil::estimate(&soil, species.soil_moisture[0], species.drying_days, dormancy_active);
     Ok(PlantStatus {
-        status: eval::overall(last_seen, now, offline_after_secs, &checks),
+        status: eval::overall(plant.device_id.is_some(), last_seen, now, offline_after_secs, &checks),
+        soil_drying,
         plant,
         species_info: species,
         dormancy_active,

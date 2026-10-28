@@ -79,6 +79,18 @@
             <tbody id="plants-table"></tbody>
           </table>
         </div>
+
+        <h2 class="section-head">Devices</h2>
+        <p class="muted">Sensor nodes that have reported. To move a sensor to another plant, edit that plant and pick
+          the device. Offline devices can be deleted; their plant keeps its history.</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Device</th><th>Plant</th><th>Last seen</th><th>Readings</th><th>Soil raw</th><th>RSSI</th><th></th></tr>
+            </thead>
+            <tbody id="all-devices"></tbody>
+          </table>
+        </div>
       </section>
 
       <!-- Species -->
@@ -91,7 +103,7 @@
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>Name</th><th>Temperature</th><th>Humidity</th><th>Light</th><th>Soil moisture</th><th>Dormancy</th><th></th></tr>
+              <tr><th>Name</th><th>Temperature</th><th>Humidity</th><th>Light</th><th>Soil moisture</th><th>Dries in</th><th>Dormancy</th><th></th></tr>
             </thead>
             <tbody id="species-table"></tbody>
           </table>
@@ -150,6 +162,7 @@
       </div>
       <button type="button" class="close" aria-label="Close">✕</button>
     </div>
+    <div id="detail-soil" class="soil-note"></div>
     <div class="range-picker" role="group" aria-label="Time range">
       <button type="button" data-hours="24">24 h</button>
       <button type="button" data-hours="168">7 d</button>
@@ -172,9 +185,11 @@
       <label>Location <input name="location" maxlength="80" placeholder="e.g. Living room"></label>
       <label>Species <select name="species_id" required></select></label>
       <label>Device ID
-        <input name="device_id" required maxlength="64" pattern="[A-Za-z0-9_\-]+" list="device-list" placeholder="plant-a1b2c3">
+        <input name="device_id" maxlength="64" pattern="[A-Za-z0-9_\-]+" list="device-list" placeholder="plant-a1b2c3">
       </label>
       <datalist id="device-list"></datalist>
+      <p id="device-hint" class="muted small">Leave empty for a plant without a sensor. Picking a sensor that is in
+        another plant moves it here; that plant keeps its history.</p>
       <fieldset>
         <legend>Soil sensor calibration</legend>
         <p class="muted small">Raw value with the probe in dry air (0 %) and in a glass of water (100 %).
@@ -205,6 +220,13 @@
       </div>
       <label>Name <input name="name" required maxlength="80"></label>
       <div id="species-ranges" class="ranges"></div>
+      <div class="ranges">
+        <span>Soil dries in (days)</span>
+        <input type="number" name="drying_days_min" step="0.5" min="0.1" max="365" aria-label="Drying days min" placeholder="optional">
+        <input type="number" name="drying_days_max" step="0.5" min="0.1" max="365" aria-label="Drying days max" placeholder="optional">
+      </div>
+      <p class="muted small">Typical days from a thorough watering until the soil is down to its minimum moisture.
+        Plants whose soil dries much slower or faster get a hint about their soil mix or pot.</p>
       <label class="check"><input type="checkbox" name="has_dormancy"> Has a dormancy period (e.g. cactus winter rest)</label>
       <fieldset id="dormancy-fields" hidden>
         <legend>Dormancy ranges</legend>
@@ -212,6 +234,37 @@
         <div id="dormancy-ranges" class="ranges"></div>
       </fieldset>
       <label>Notes <textarea name="notes" rows="2" maxlength="500"></textarea></label>
+      <p class="error form-error" hidden></p>
+      <div class="actions">
+        <button type="button" class="cancel">Cancel</button>
+        <button type="submit" class="primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="calib-dialog">
+    <form id="calib-form" class="stack-form">
+      <div class="dialog-head">
+        <h2 id="calib-title">Recalibrate soil sensor</h2>
+        <button type="button" class="close" aria-label="Close">✕</button>
+      </div>
+      <p class="muted small">Until you save or cancel (at most 30 min), this sensor's readings aren't added to the
+        plant's history and don't trigger alerts.</p>
+      <ol class="steps">
+        <li>Pull the probe out of the soil and wipe it clean and dry.</li>
+        <li><strong>Dry:</strong> hold it in the air and press <em>EN</em> on the ESP32. When the new reading
+          appears below, press “Use for dry”.</li>
+        <li><strong>Wet:</strong> put it in a glass of water up to the line (not the electronics), press <em>EN</em>,
+          then “Use for wet”.</li>
+        <li>Save, then put the probe back in the soil.</li>
+      </ol>
+      <p id="calib-live" class="notice" aria-live="polite">Waiting for a reading…</p>
+      <div class="calib">
+        <label>Dry <input name="soil_dry_raw" type="number" min="0" max="4095" required></label>
+        <button type="button" data-use="soil_dry_raw">Use for dry</button>
+        <label>Wet <input name="soil_wet_raw" type="number" min="0" max="4095" required></label>
+        <button type="button" data-use="soil_wet_raw">Use for wet</button>
+      </div>
       <p class="error form-error" hidden></p>
       <div class="actions">
         <button type="button" class="cancel">Cancel</button>

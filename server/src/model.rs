@@ -25,6 +25,11 @@ pub struct Species {
     /// Used instead of the ranges above for plants marked dormant.
     #[serde(default)]
     pub dormancy: Option<Ranges>,
+    /// Days the soil usually takes, after watering, to dry down to the
+    /// minimum soil moisture. Used to judge whether pot and soil mix suit
+    /// the plant (see soil.rs).
+    #[serde(default)]
+    pub drying_days: Option<Range>,
 }
 
 /// One set of optimal ranges, as used for evaluation.
@@ -44,7 +49,9 @@ pub struct Plant {
     pub name: String,
     #[serde(default)]
     pub location: String,
-    pub device_id: String,
+    /// The sensor node in the pot; none after its sensor moved elsewhere.
+    #[serde(default)]
+    pub device_id: Option<String>,
     pub species_id: i64,
     /// Raw ADC value of the soil sensor in dry air (0 %)
     pub soil_dry_raw: i64,
@@ -56,6 +63,11 @@ pub struct Plant {
     /// Resting: evaluate against the species' dormancy ranges, if it has any.
     #[serde(default)]
     pub dormant: bool,
+    /// While set and in the future, the soil sensor is out of the pot being
+    /// calibrated: its readings aren't added to the plant. Set by the server;
+    /// ignored on input.
+    #[serde(default, skip_deserializing)]
+    pub calibrating_until: Option<i64>,
 }
 
 fn yes() -> bool {
@@ -118,6 +130,9 @@ impl Species {
         if let Some(d) = &self.dormancy {
             check_ranges("dormancy ", [d.temperature, d.humidity, d.light_lux, d.soil_moisture])?;
         }
+        if let Some(d) = self.drying_days {
+            check_range("drying_days", d, 0.1, 365.0)?;
+        }
         Ok(())
     }
 
@@ -140,19 +155,24 @@ impl Plant {
     pub fn validate(&self) -> Result<(), String> {
         check_text("name", &self.name, true, 80)?;
         check_text("location", &self.location, false, 80)?;
-        if !valid_device_id(&self.device_id) {
+        if self.device_id.as_deref().is_some_and(|d| !valid_device_id(d)) {
             return Err("device_id must be 1-64 characters of [A-Za-z0-9_-]".into());
         }
-        for (field, v) in [("soil_dry_raw", self.soil_dry_raw), ("soil_wet_raw", self.soil_wet_raw)] {
-            if !(0..=4095).contains(&v) {
-                return Err(format!("{field} must be between 0 and 4095"));
-            }
-        }
-        if self.soil_dry_raw == self.soil_wet_raw {
-            return Err("soil_dry_raw and soil_wet_raw must differ".into());
-        }
-        Ok(())
+        validate_calibration(self.soil_dry_raw, self.soil_wet_raw)
     }
+}
+
+/// Raw soil sensor values for dry air and water.
+pub fn validate_calibration(dry: i64, wet: i64) -> Result<(), String> {
+    for (field, v) in [("soil_dry_raw", dry), ("soil_wet_raw", wet)] {
+        if !(0..=4095).contains(&v) {
+            return Err(format!("{field} must be between 0 and 4095"));
+        }
+    }
+    if dry == wet {
+        return Err("soil_dry_raw and soil_wet_raw must differ".into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -177,12 +197,13 @@ mod tests {
             id: 0,
             name: "San Pedro".into(),
             location: String::new(),
-            device_id: "plant-a1b2c3".into(),
+            device_id: Some("plant-a1b2c3".into()),
             species_id: 1,
             soil_dry_raw: 2800,
             soil_wet_raw: 1200,
             alerts: true,
             dormant: false,
+            calibrating_until: None,
         };
         assert_eq!(cactus.ranges_for(&p).temperature, cactus.temperature);
         p.dormant = true;
@@ -198,17 +219,19 @@ mod tests {
             id: 0,
             name: "Monstera".into(),
             location: String::new(),
-            device_id: "plant-a1b2c3".into(),
+            device_id: Some("plant-a1b2c3".into()),
             species_id: 1,
             soil_dry_raw: 2800,
             soil_wet_raw: 1200,
             alerts: true,
             dormant: false,
+            calibrating_until: None,
         };
         assert!(p.validate().is_ok());
-        p.device_id = "bad id; drop".into();
+        p.device_id = Some("bad id; drop".into());
         assert!(p.validate().is_err());
-        p.device_id = "ok".into();
+        p.device_id = None;
+        assert!(p.validate().is_ok());
         p.name = "x\u{0007}".into();
         assert!(p.validate().is_err());
     }

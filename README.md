@@ -59,6 +59,14 @@ To flash on Fedora you need to be in the `dialout` group: `sudo usermod -aG dial
 
 New sensors show up on the dashboard under **Unassigned devices**. Click **Add as plant**, pick the species, and calibrate the soil sensor. The plant form has **Use latest** buttons: hold the probe in dry air, wait for a reading, press *Use latest* next to *Dry*, then do the same in a glass of water for *Wet*.
 
+Later changes, all from the **Plants** tab:
+
+- **Recalibrate** a plant's soil sensor: a guided dialog takes the new dry and wet values. Until you save or cancel (at most 30 min), the probe's readings stay out of the plant's history and alerts.
+- **Move a sensor** to another plant: edit the plant that should get it and pick the device. Readings belong to the plant they were taken in, so the old plant keeps its history (it shows *No sensor* until it gets one), and the sensor's calibration is copied along.
+- **Delete an offline device** (broken or retired): it is removed from its plant, which keeps its history. If it reports again it shows up as a new device.
+
+**Soil drying check.** From the soil moisture history, the server finds waterings (sharp rises) and measures how long the soil takes to dry down to the species' minimum. Each species has an expected drying time (*Dries in* on the Species tab). Soil that stays wet much longer (e.g. a cactus in a dense mix, or a pot without drainage) or dries much faster (mix too coarse, pot too small) gets a hint on the plant's card, with details in its chart view. It needs at least one thorough watering followed by a few days of readings, and isn't judged while a plant is dormant.
+
 ## Production: exposing it in a DMZ
 
 ### 1. Install the server
@@ -159,7 +167,7 @@ On the public server, anyone who knows the topic name can read it, so treat the 
 
 ## How plants are evaluated
 
-Temperature, humidity and soil moisture use the latest reading. Light uses the **average lux over the last 24 h, counting only readings ≥ 50 lx**, so night readings don't flag every plant as too dark. A plant's status is `ok`, `attention` (something out of range; the UI shows advice), `offline` (no reading for `offline_after_minutes`), or `no_data`.
+Temperature, humidity and soil moisture use the latest reading. Light uses the **average lux over the last 24 h, counting only readings ≥ 50 lx**, so night readings don't flag every plant as too dark. A plant's status is `ok`, `attention` (something out of range; the UI shows advice), `offline` (no reading for `offline_after_minutes`), `no_data`, or `no_sensor` (its sensor was moved or deleted).
 
 ## API
 
@@ -177,7 +185,7 @@ curl -s -H "Authorization: Bearer $T" "$S/api/plants/1/readings?hours=168&format
 | GET  | `/api/plants/{id}` | One plant |
 | GET  | `/api/plants/{id}/readings?hours=24&format=json\|csv` | History (max 1 year) |
 | GET  | `/api/species` | Species and their optimal ranges |
-| GET  | `/api/devices` | Every sensor that has reported, assigned or not |
+| GET  | `/api/devices` | Sensors that are assigned or have unassigned readings, with `online` |
 | GET  | `/api/health` | Liveness check (no auth) |
 
 Tokens are read-only. Creating, editing and deleting (plants, species, tokens) needs a logged-in browser session.

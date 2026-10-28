@@ -26,6 +26,8 @@ pub enum Overall {
     Attention,
     Offline,
     NoData,
+    /// No device assigned (its sensor moved to another plant).
+    NoSensor,
 }
 
 #[derive(Debug, Serialize)]
@@ -116,8 +118,9 @@ pub fn evaluate(ranges: &Ranges, c: &Conditions) -> Vec<Check> {
     ]
 }
 
-pub fn overall(last_seen: Option<i64>, now: i64, offline_after_secs: i64, checks: &[Check]) -> Overall {
+pub fn overall(has_device: bool, last_seen: Option<i64>, now: i64, offline_after_secs: i64, checks: &[Check]) -> Overall {
     match last_seen {
+        _ if !has_device => Overall::NoSensor,
         None => Overall::NoData,
         Some(ts) if now - ts > offline_after_secs => Overall::Offline,
         Some(_) if checks.iter().any(|c| matches!(c.status, Status::Low | Status::High)) => {

@@ -13,7 +13,7 @@ use tower_http::timeout::TimeoutLayer;
 
 use crate::auth::{self, constant_time_eq, require_user, Principal};
 use crate::db::NewReading;
-use crate::model::{valid_device_id, Plant, Species};
+use crate::model::{valid_device_id, validate_calibration, Plant, Species};
 use crate::status::{self, now, ReadingOut};
 use crate::{alerts, AppState};
 
@@ -27,9 +27,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/plants", get(list_plants).post(create_plant))
         .route("/api/plants/{id}", get(get_plant).put(update_plant).delete(delete_plant))
         .route("/api/plants/{id}/readings", get(plant_readings))
+        .route(
+            "/api/plants/{id}/calibration",
+            post(start_calibration).put(finish_calibration).delete(cancel_calibration),
+        )
         .route("/api/species", get(list_species).post(create_species))
         .route("/api/species/{id}", put(update_species).delete(delete_species))
         .route("/api/devices", get(list_devices))
+        .route("/api/devices/{id}", delete(delete_device))
         .route("/api/tokens", get(list_tokens).post(create_token))
         .route("/api/tokens/{id}", delete(delete_token))
         .route("/api/notifications", get(notification_status))
@@ -177,27 +182,90 @@ async fn get_plant(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> A
     Ok(Json(status::plant_status(&state.db, plant, species, offline_secs(&state))?).into_response())
 }
 
-fn validate_plant(state: &AppState, p: &Plant) -> AppResult<()> {
+#[derive(Deserialize)]
+struct PlantInput {
+    #[serde(flatten)]
+    plant: Plant,
+    /// Take the device from the plant that has it. Its history stays with
+    /// that plant, which is left without a sensor.
+    #[serde(default)]
+    move_device: bool,
+}
+
+/// `id` is the plant being edited, if any.
+fn validate_plant(state: &AppState, input: &PlantInput, id: Option<i64>) -> AppResult<()> {
+    let p = &input.plant;
     p.validate().map_err(bad_request)?;
     if state.db.species_get(p.species_id)?.is_none() {
         return Err(bad_request("unknown species".into()));
     }
+    if let Some(device) = &p.device_id {
+        let owner = state.db.plants_list()?.into_iter().find(|o| o.device_id.as_ref() == Some(device));
+        if let Some(owner) = owner.filter(|o| Some(o.id) != id && !input.move_device) {
+            return Err(AppError::Status(
+                StatusCode::CONFLICT,
+                format!("device {device} is in plant “{}”; move it from there", owner.name),
+            ));
+        }
+    }
     Ok(())
 }
 
-async fn create_plant(State(state): State<Arc<AppState>>, Json(p): Json<Plant>) -> AppResult<Response> {
-    validate_plant(&state, &p)?;
-    let id = state.db.plant_insert(&p)?;
+async fn create_plant(State(state): State<Arc<AppState>>, Json(input): Json<PlantInput>) -> AppResult<Response> {
+    validate_plant(&state, &input, None)?;
+    let id = state.db.plant_insert(&input.plant, input.move_device)?;
     Ok((StatusCode::CREATED, Json(serde_json::json!({ "id": id }))).into_response())
 }
 
 async fn update_plant(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
-    Json(p): Json<Plant>,
+    Json(input): Json<PlantInput>,
 ) -> AppResult<StatusCode> {
-    validate_plant(&state, &p)?;
-    if !state.db.plant_update(id, &p)? {
+    validate_plant(&state, &input, Some(id))?;
+    if !state.db.plant_update(id, &input.plant, input.move_device)? {
+        return Err(not_found("plant"));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ---------------------------------------------------------------- calibration
+
+/// How long a calibration may run before readings go to the plant again.
+const CALIBRATION_SECS: i64 = 30 * 60;
+
+/// Takes the soil sensor out of service: until calibration ends (or times
+/// out), its readings don't reach the plant's history, status or alerts.
+async fn start_calibration(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> AppResult<Response> {
+    let plant = state.db.plant_get(id)?.ok_or_else(|| not_found("plant"))?;
+    if plant.device_id.is_none() {
+        return Err(bad_request("this plant has no sensor".into()));
+    }
+    let until = now() + CALIBRATION_SECS;
+    state.db.plant_set_calibrating(id, Some(until))?;
+    Ok(Json(serde_json::json!({ "until": until })).into_response())
+}
+
+#[derive(Deserialize)]
+struct Calibration {
+    soil_dry_raw: i64,
+    soil_wet_raw: i64,
+}
+
+async fn finish_calibration(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    Json(c): Json<Calibration>,
+) -> AppResult<StatusCode> {
+    validate_calibration(c.soil_dry_raw, c.soil_wet_raw).map_err(bad_request)?;
+    if !state.db.plant_set_calibration(id, c.soil_dry_raw, c.soil_wet_raw)? {
+        return Err(not_found("plant"));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn cancel_calibration(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> AppResult<StatusCode> {
+    if !state.db.plant_set_calibrating(id, None)? {
         return Err(not_found("plant"));
     }
     Ok(StatusCode::NO_CONTENT)
@@ -225,7 +293,7 @@ async fn plant_readings(
 ) -> AppResult<Response> {
     let plant = state.db.plant_get(id)?.ok_or_else(|| not_found("plant"))?;
     let hours = q.hours.unwrap_or(24).clamp(1, 24 * 366);
-    let rows = state.db.history(&plant.device_id, now() - hours * 3600)?;
+    let rows = state.db.history(plant.id, now() - hours * 3600)?;
     let readings: Vec<_> = rows.iter().map(|r| ReadingOut::new(r, Some(&plant))).collect();
 
     match q.format.as_deref() {
@@ -290,29 +358,51 @@ struct DeviceOut {
     device_id: String,
     /// Plant this device is assigned to, if any.
     plant_id: Option<i64>,
+    plant_name: Option<String>,
     readings: i64,
     last_seen: i64,
+    /// Reported within offline_after_minutes.
+    online: bool,
     latest: ReadingOut,
 }
 
 async fn list_devices(State(state): State<Arc<AppState>>) -> AppResult<Response> {
     let plants = state.db.plants_list()?;
+    let now = now();
     let devices: Vec<_> = state
         .db
         .devices()?
         .into_iter()
         .map(|d| {
-            let plant = plants.iter().find(|p| p.device_id == d.device_id);
+            let plant = plants.iter().find(|p| p.device_id.as_ref() == Some(&d.device_id));
             DeviceOut {
                 plant_id: plant.map(|p| p.id),
+                plant_name: plant.map(|p| p.name.clone()),
                 readings: d.readings,
                 last_seen: d.latest.ts,
+                online: now - d.latest.ts <= offline_secs(&state),
                 latest: ReadingOut::new(&d.latest, plant),
                 device_id: d.device_id,
             }
         })
         .collect();
     Ok(Json(devices).into_response())
+}
+
+/// Forgets an offline device (e.g. a broken or retired sensor). Its plant
+/// keeps its history; readings that belong to no plant are deleted. If it
+/// reports again, it shows up as a new unassigned device.
+async fn delete_device(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> AppResult<StatusCode> {
+    let device = state.db.devices()?.into_iter().find(|d| d.device_id == id).ok_or_else(|| not_found("device"))?;
+    if now() - device.latest.ts <= offline_secs(&state) {
+        return Err(AppError::Status(
+            StatusCode::CONFLICT,
+            "this device is still sending readings; only offline devices can be deleted".into(),
+        ));
+    }
+    state.db.device_delete(&id)?;
+    tracing::info!(device = %id, "device deleted");
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ---------------------------------------------------------------- API tokens

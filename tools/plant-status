@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# Plant status for the desktop: a short slstatus segment, or a full report
+# with a "Take action" list.
+#
+#   plant-status            one line for the status bar (never blocks: shows
+#                           the cached result and refreshes it in the background)
+#   plant-status -d         full report with what to do, fetched now
+#   plant-status -n         the same report as a desktop notification
+#
+# Settings come from ~/.config/plant-status/config (chmod 600), shell syntax:
+#   PLANT_SERVER=https://plant.manager
+#   PLANT_TOKEN=...              # Settings → API tokens in the web UI
+#   PLANT_CACERT=~/.config/plant-status/root_ca.pem   # if the CA isn't trusted system-wide
+#   PLANT_REFRESH=120            # seconds between fetches in bar mode
+#
+# slstatus (config.h):  {run_command, " [ %s ]", "plant-status"},
+set -uo pipefail
+
+CONF="${XDG_CONFIG_HOME:-$HOME/.config}/plant-status/config"
+CACHE_DIR="${XDG_RUNTIME_DIR:-/tmp/plant-status-$UID}"
+CACHE="$CACHE_DIR/plant-status.json"
+LOCK="$CACHE_DIR/plant-status.lock"
+# shellcheck source=/dev/null
+[[ -r $CONF ]] && . "$CONF"
+mkdir -p -m 700 "$CACHE_DIR"
+PLANT_REFRESH="${PLANT_REFRESH:-120}"
+STALE_AFTER=1800   # bar shows "stale" when the cache is older than this
+
+die() { echo "plant-status: $*" >&2; exit 1; }
+
+# Writes /api/plants to the cache. The token goes to curl on stdin, so it never
+# shows up in `ps`.
+fetch() {
+  [[ -n ${PLANT_SERVER:-} && -n ${PLANT_TOKEN:-} ]] || { echo "set PLANT_SERVER and PLANT_TOKEN in $CONF" >&2; return 1; }
+  local tmp="$CACHE.$$" ca=()
+  [[ -n ${PLANT_CACERT:-} ]] && ca=(--cacert "${PLANT_CACERT/#\~/$HOME}")
+  if printf 'header = "Authorization: Bearer %s"\n' "$PLANT_TOKEN" \
+      | curl -sSf --max-time 10 "${ca[@]}" -K - -o "$tmp" "${PLANT_SERVER%/}/api/plants" \
+      && jq -e 'type == "array"' "$tmp" >/dev/null 2>&1; then
+    mv -f "$tmp" "$CACHE"
+  else
+    rm -f "$tmp"; return 1
+  fi
+}
+
+cache_age() { echo $(( $(date +%s) - $(stat -c %Y "$CACHE" 2>/dev/null || echo 0) )); }
+
+# Short words for the bar, per metric and direction.
+JQ_DEFS='
+def short: {
+  "soil_moisture": {"low": "water", "high": "too wet"},
+  "light_lux":     {"low": "more light", "high": "less light"},
+  "temperature":   {"low": "too cold", "high": "too hot"},
+  "humidity":      {"low": "air dry", "high": "air humid"}
+}[.metric][.status] // .metric;
+def ago: (now - .) as $s
+  | if $s < 3600 then "\($s / 60 | floor) min" elif $s < 172800 then "\($s / 3600 | floor) h" else "\($s / 86400 | floor) d" end;
+def num: if . == null then "–" elif . >= 100 then (round | tostring) else (. * 10 | round / 10 | tostring) end;
+def unit: if test("^[a-z]") then " " + . else . end;
+def issues: .checks | map(select(.status == "low" or .status == "high"));
+'
+
+bar() {
+  if [[ ! -s $CACHE || $(cache_age) -ge $PLANT_REFRESH ]]; then
+    # Detach completely, or slstatus would wait for the fetch to finish.
+    ( exec 9>"$LOCK"; flock -n 9 || exit 0; fetch ) </dev/null >/dev/null 2>&1 &
+  fi
+  [[ -s $CACHE ]] || { echo "🌱 …"; return; }
+  local stale=""
+  [[ $(cache_age) -ge $STALE_AFTER ]] && stale=" (stale)"
+  # Plants without a sensor aren't counted.
+  jq -r "$JQ_DEFS"'
+    map(select(.status != "no_sensor"))
+    | map(
+      if .status == "attention" then "\(.name): \(issues | map(short) | join(", "))"
+      elif .status == "offline" then "\(.name): offline"
+      elif .status == "no_data" then "\(.name): no data"
+      else empty end) as $bad
+    | if length == 0 then "🌱 no plants"
+      elif ($bad | length) == 0 then "🌱 \(length) ok"
+      else "🌱 \(length - ($bad | length))/\(length) ok ⚠ \($bad[0])" + (if ($bad | length) > 1 then " +\(($bad | length) - 1)" else "" end)
+      end' "$CACHE" 2>/dev/null | tr -d '\n' || echo -n "🌱 ?"
+  echo "$stale"
+}
+
+report() {
+  local note=""
+  if ! fetch 2>"$CACHE_DIR/err" ; then
+    [[ -s $CACHE ]] || die "can't reach the server: $(cat "$CACHE_DIR/err" 2>/dev/null)"
+    note="Server unreachable; data from $(( $(cache_age) / 60 )) min ago."
+  fi
+  [[ -n $note ]] && echo "$note"
+  jq -r "$JQ_DEFS"'
+    def icon: {"ok": "✔", "attention": "⚠", "offline": "✖", "no_data": "·", "no_sensor": "○"}[.status] // "?";
+    def values: .latest as $r
+      | if $r == null then "no readings yet"
+        else "\($r.temperature | num)°C  \($r.humidity | num)%RH  \($r.lux | num) lx  soil \($r.soil_moisture | num)%"
+          + "  (\($r.timestamp | ago) ago)" end;
+    def soil: if .soil_drying.verdict == "slow" or .soil_drying.verdict == "fast" then [.soil_drying.message] else [] end;
+    def actions: soil + if .status == "no_sensor" then []
+      elif .status == "offline" then
+        ["sensor silent for \(.last_seen | ago): check its power and WiFi, or press EN on the ESP32."]
+      elif .status == "no_data" then
+        ["no reading yet: check that device \(.device_id) is powered and assigned to this plant."]
+      else issues | map("\(.advice // "\(.label) out of range.") (\(.label | sub(" \\(.*"; "") | ascii_downcase) \(.value | num)\(.unit | unit), wants \(.min | num)–\(.max | num)\(.unit | unit))")
+      end;
+
+    "Plants",
+    (.[] | "  \(icon) \(.name)\(if .dormancy_active then " (dormant)" else "" end)"
+      + "\n      \(if .status == "no_sensor" then "no sensor" else values end)"),
+    "",
+    "Take action",
+    ([.[] | . as $p | actions[] | "  • \($p.name): \(.)"] | if length == 0 then "  Nothing to do: every plant is fine." else .[] end)
+  ' "$CACHE"
+}
+
+case "${1:-}" in
+  "")                bar ;;
+  -d|--details)      report ;;
+  -n|--notify)       out=$(report 2>&1); notify-send -a plant-status "Plants" "$out" ;;
+  -h|--help)         sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *)                 die "unknown option: $1 (try --help)" ;;
+esac

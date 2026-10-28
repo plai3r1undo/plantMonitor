@@ -131,7 +131,7 @@ impl Species {
             check_ranges("dormancy ", [d.temperature, d.humidity, d.light_lux, d.soil_moisture])?;
         }
         if let Some(d) = self.drying_days {
-            check_range("drying_days", d, 0.1, 365.0)?;
+            check_range("drying_days", d, 0.5, 365.0)?;
         }
         Ok(())
     }

@@ -17,6 +17,8 @@ pub enum Status {
     Low,
     High,
     Unknown,
+    /// The sensor is switched off for this plant.
+    Off,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

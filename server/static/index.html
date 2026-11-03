@@ -202,6 +202,16 @@
         </div>
         <p id="calib-hint" class="muted small"></p>
       </fieldset>
+      <fieldset>
+        <legend>Sensors in use</legend>
+        <p class="muted small">Untick a sensor you unplug, e.g. the soil probe of a cactus during its winter rest.
+          It isn't checked, can't raise alerts, and its values aren't stored until you tick it again.</p>
+        <label class="check"><input type="checkbox" name="soil_sensor"> Soil moisture</label>
+        <label class="check"><input type="checkbox" name="light_sensor"> Light</label>
+        <label class="check"><input type="checkbox" name="air_sensor"> Temperature &amp; humidity</label>
+        <p id="dormant-soil-hint" class="muted small" hidden>Dormant: if you won't water and unplug the soil probe,
+          untick Soil moisture.</p>
+      </fieldset>
       <label class="check"><input type="checkbox" name="alerts"> Send notifications for this plant</label>
       <label class="check" id="dormant-option"><input type="checkbox" name="dormant"> Dormant: use the species' dormancy ranges</label>
       <p class="error form-error" hidden></p>

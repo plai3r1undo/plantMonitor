@@ -77,7 +77,12 @@ pub fn plant_status(db: &Db, plant: Plant, species: Species, offline_after_secs:
         light_lux: light,
         soil_moisture: latest.as_ref().and_then(|r| r.soil_moisture),
     };
-    let checks = eval::evaluate(&species.ranges_for(&plant), &conditions);
+    let mut checks = eval::evaluate(&species.ranges_for(&plant), &conditions);
+    for c in checks.iter_mut().filter(|c| !plant.sensor_on(c.metric)) {
+        c.status = eval::Status::Off;
+        c.value = None;
+        c.advice = None;
+    }
     let dormancy_active = plant.dormant && species.dormancy.is_some();
     let last_seen = latest.as_ref().map(|r| r.timestamp);
     // 0 and 4095 are a disconnected sensor, not soil.
@@ -87,7 +92,11 @@ pub fn plant_status(db: &Db, plant: Plant, species: Species, offline_after_secs:
         .filter(|&(_, raw)| raw > 0 && raw < 4095)
         .map(|(ts, raw)| (ts, eval::soil_percent(raw, plant.soil_dry_raw, plant.soil_wet_raw)))
         .collect();
-    let soil_drying = soil::estimate(&soil, species.soil_moisture[0], species.drying_days, dormancy_active);
+    let soil_drying = if plant.soil_sensor {
+        soil::estimate(&soil, species.soil_moisture[0], species.drying_days, dormancy_active)
+    } else {
+        soil::off()
+    };
     Ok(PlantStatus {
         status: eval::overall(plant.device_id.is_some(), last_seen, now, offline_after_secs, &checks),
         soil_drying,

@@ -63,6 +63,15 @@ pub struct Plant {
     /// Resting: evaluate against the species' dormancy ranges, if it has any.
     #[serde(default)]
     pub dormant: bool,
+    /// Sensors in use. A sensor that is off (e.g. the soil probe unplugged
+    /// during dormancy) isn't checked or alerted on, and its values aren't stored.
+    #[serde(default = "yes")]
+    pub soil_sensor: bool,
+    #[serde(default = "yes")]
+    pub light_sensor: bool,
+    /// Temperature and humidity (one DHT22).
+    #[serde(default = "yes")]
+    pub air_sensor: bool,
     /// While set and in the future, the soil sensor is out of the pot being
     /// calibrated: its readings aren't added to the plant. Set by the server;
     /// ignored on input.
@@ -152,6 +161,16 @@ impl Species {
 }
 
 impl Plant {
+    /// Whether the sensor measuring `metric` (as in eval::Check) is in use.
+    pub fn sensor_on(&self, metric: &str) -> bool {
+        match metric {
+            "soil_moisture" => self.soil_sensor,
+            "light_lux" => self.light_sensor,
+            "temperature" | "humidity" => self.air_sensor,
+            _ => true,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         check_text("name", &self.name, true, 80)?;
         check_text("location", &self.location, false, 80)?;
@@ -203,6 +222,9 @@ mod tests {
             soil_wet_raw: 1200,
             alerts: true,
             dormant: false,
+            soil_sensor: true,
+            light_sensor: true,
+            air_sensor: true,
             calibrating_until: None,
         };
         assert_eq!(cactus.ranges_for(&p).temperature, cactus.temperature);
@@ -225,6 +247,9 @@ mod tests {
             soil_wet_raw: 1200,
             alerts: true,
             dormant: false,
+            soil_sensor: true,
+            light_sensor: true,
+            air_sensor: true,
             calibrating_until: None,
         };
         assert!(p.validate().is_ok());

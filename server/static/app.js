@@ -252,7 +252,13 @@ function rangeBar(check) {
 }
 
 function plantCard(p) {
-  const metrics = p.checks.map((c) => `
+  const metrics = p.checks.map((c) => c.status === "off" ? `
+    <div class="metric" title="Sensor switched off for this plant">
+      <div class="metric-row">
+        <span>${esc(c.label)}</span>
+        <span class="metric-value off">Off</span>
+      </div>
+    </div>` : `
     <div class="metric" title="Optimal: ${c.min}–${c.max} ${esc(c.unit)}">
       <div class="metric-row">
         <span>${esc(c.label)}</span>
@@ -456,9 +462,10 @@ async function loadHistory() {
   $$(".range-picker button").forEach((b) => b.classList.toggle("active", Number(b.dataset.hours) === hours));
 
   const charts = $("#charts");
+  const off = (c) => plant.checks.find((k) => k.metric === c.range)?.status === "off";
   charts.innerHTML = CHARTS.map((c) => `
     <div class="chart">
-      <h4>${c.title} <span class="muted">(${c.unit})</span></h4>
+      <h4>${c.title} <span class="muted">(${c.unit})${off(c) ? " · sensor off" : ""}</span></h4>
       <canvas data-field="${c.field}"></canvas>
     </div>`).join("");
 
@@ -508,7 +515,7 @@ async function loadPlants() {
         <td>${esc(p.name)}</td>
         <td>${esc(p.location) || "—"}</td>
         <td>${esc(p.species_info.name)}${p.dormancy_active ? " · dormant" : ""}</td>
-        <td>${p.device_id ? `<code>${esc(p.device_id)}</code>` : "—"}</td>
+        <td>${p.device_id ? `<code>${esc(p.device_id)}</code>` : "—"}${sensorsOff(p)}</td>
         <td>${p.soil_dry_raw} / ${p.soil_wet_raw}</td>
         <td>${p.alerts ? "On" : "Off"}</td>
         <td class="actions">
@@ -517,6 +524,12 @@ async function loadPlants() {
           <button type="button" class="small danger" data-delete="${p.id}">Delete</button>
         </td>
       </tr>`).join("");
+}
+
+/** " · soil off" etc. for the sensors a plant has switched off. */
+function sensorsOff(p) {
+  const off = [!p.soil_sensor && "soil", !p.light_sensor && "light", !p.air_sensor && "temp/humidity"].filter(Boolean);
+  return off.length ? ` <span class="muted">· ${off.join(", ")} off</span>` : "";
 }
 
 function renderAllDevices(devices) {
@@ -592,6 +605,9 @@ async function openPlantDialog(plant, presetDevice = "") {
   form.soil_wet_raw.value = plant?.soil_wet_raw ?? 1200;
   form.alerts.checked = plant?.alerts ?? true;
   form.dormant.checked = plant?.dormant ?? false;
+  form.soil_sensor.checked = plant?.soil_sensor ?? true;
+  form.light_sensor.checked = plant?.light_sensor ?? true;
+  form.air_sensor.checked = plant?.air_sensor ?? true;
   updateDormantOption();
   $("#plant-dialog").showModal();
 }
@@ -601,9 +617,18 @@ function updateDormantOption() {
   const form = $("#plant-form");
   const s = state.plantSpecies.find((s) => s.id === Number(form.species_id.value));
   $("#dormant-option").hidden = !s?.dormancy;
+  updateSoilHint();
+}
+
+// Suggest switching the soil sensor off for a dormant plant.
+function updateSoilHint() {
+  const form = $("#plant-form");
+  $("#dormant-soil-hint").hidden = !(form.dormant.checked && !$("#dormant-option").hidden && form.soil_sensor.checked);
 }
 
 $("#plant-form").species_id.addEventListener("change", updateDormantOption);
+$("#plant-form").dormant.addEventListener("change", updateSoilHint);
+$("#plant-form").soil_sensor.addEventListener("change", updateSoilHint);
 
 /** The plant other than the one being edited that has this device, if any. */
 function deviceOwner(deviceId) {
@@ -652,6 +677,9 @@ $("#plant-form").addEventListener("submit", async (e) => {
     soil_wet_raw: Number(form.soil_wet_raw.value),
     alerts: form.alerts.checked,
     dormant: form.dormant.checked,
+    soil_sensor: form.soil_sensor.checked,
+    light_sensor: form.light_sensor.checked,
+    air_sensor: form.air_sensor.checked,
   };
   const editing = state.editingPlant;
   const owner = body.device_id && deviceOwner(body.device_id);

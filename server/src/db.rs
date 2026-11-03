@@ -133,7 +133,10 @@ const PLANTS_TABLE: &str = "(
         soil_wet_raw      INTEGER NOT NULL,
         alerts            INTEGER NOT NULL DEFAULT 1,
         dormant           INTEGER NOT NULL DEFAULT 0,
-        calibrating_until INTEGER
+        calibrating_until INTEGER,
+        soil_sensor       INTEGER NOT NULL DEFAULT 1,
+        light_sensor      INTEGER NOT NULL DEFAULT 1,
+        air_sensor        INTEGER NOT NULL DEFAULT 1
     )";
 
 const READING_COLUMNS: &str = "ts, temperature, humidity, lux, soil_raw, rssi";
@@ -142,7 +145,8 @@ const SPECIES_COLUMNS: &str =
      dorm_temp_min, dorm_temp_max, dorm_hum_min, dorm_hum_max,
      dorm_light_min, dorm_light_max, dorm_soil_min, dorm_soil_max, dry_days_min, dry_days_max";
 const PLANT_COLUMNS: &str =
-    "id, name, location, device_id, species_id, soil_dry_raw, soil_wet_raw, alerts, dormant, calibrating_until";
+    "id, name, location, device_id, species_id, soil_dry_raw, soil_wet_raw, alerts, dormant, calibrating_until,
+     soil_sensor, light_sensor, air_sensor";
 
 /// Columns added after the first release, as (table, column, definition).
 const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
@@ -159,6 +163,9 @@ const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
     ("species", "dry_days_min", "REAL"),
     ("species", "dry_days_max", "REAL"),
     ("plants", "calibrating_until", "INTEGER"),
+    ("plants", "soil_sensor", "INTEGER NOT NULL DEFAULT 1"),
+    ("plants", "light_sensor", "INTEGER NOT NULL DEFAULT 1"),
+    ("plants", "air_sensor", "INTEGER NOT NULL DEFAULT 1"),
     ("readings", "plant_id", "INTEGER REFERENCES plants (id) ON DELETE SET NULL"),
 ];
 
@@ -234,6 +241,9 @@ fn map_plant(row: &Row) -> rusqlite::Result<Plant> {
         alerts: row.get(7)?,
         dormant: row.get(8)?,
         calibrating_until: row.get(9)?,
+        soil_sensor: row.get(10)?,
+        light_sensor: row.get(11)?,
+        air_sensor: row.get(12)?,
     })
 }
 
@@ -332,14 +342,35 @@ impl Db {
     // ------------------------------------------------------------ readings
 
     /// Stores a reading for the device and, unless its sensor is being
-    /// calibrated, for the plant the device is in.
+    /// calibrated, for the plant the device is in. Values of sensors the
+    /// plant has switched off are dropped: an unplugged sensor reads noise.
     pub fn insert_reading(&self, r: &NewReading, ts: i64) -> Result<()> {
-        self.conn().execute(
+        let conn = self.conn();
+        let plant: Option<(i64, bool, bool, bool)> = conn
+            .query_row(
+                "SELECT id, soil_sensor, light_sensor, air_sensor FROM plants
+                 WHERE device_id = ?1 AND (calibrating_until IS NULL OR calibrating_until < ?2)",
+                params![r.device_id, ts],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
+        let (plant_id, soil, light, air) = match plant {
+            Some((id, soil, light, air)) => (Some(id), soil, light, air),
+            None => (None, true, true, true),
+        };
+        conn.execute(
             "INSERT INTO readings (device_id, plant_id, ts, temperature, humidity, lux, soil_raw, rssi)
-             VALUES (?1, (SELECT id FROM plants WHERE device_id = ?1
-                          AND (calibrating_until IS NULL OR calibrating_until < ?2)),
-                     ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![r.device_id, ts, r.temperature, r.humidity, r.lux, r.soil_raw, r.rssi],
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                r.device_id,
+                plant_id,
+                ts,
+                r.temperature.filter(|_| air),
+                r.humidity.filter(|_| air),
+                r.lux.filter(|_| light),
+                r.soil_raw.filter(|_| soil),
+                r.rssi
+            ],
         )?;
         Ok(())
     }
@@ -498,9 +529,13 @@ impl Db {
             release_device(&tx, p.device_id.as_deref(), None)?;
         }
         tx.execute(
-            "INSERT INTO plants (name, location, device_id, species_id, soil_dry_raw, soil_wet_raw, alerts, dormant)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![p.name, p.location, p.device_id, p.species_id, p.soil_dry_raw, p.soil_wet_raw, p.alerts, p.dormant],
+            "INSERT INTO plants (name, location, device_id, species_id, soil_dry_raw, soil_wet_raw, alerts, dormant,
+                                 soil_sensor, light_sensor, air_sensor)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                p.name, p.location, p.device_id, p.species_id, p.soil_dry_raw, p.soil_wet_raw, p.alerts, p.dormant,
+                p.soil_sensor, p.light_sensor, p.air_sensor
+            ],
         )?;
         let id = tx.last_insert_rowid();
         tx.commit()?;
@@ -518,9 +553,13 @@ impl Db {
         let n = tx.execute(
             "UPDATE plants SET name = ?2, location = ?3, device_id = ?4, species_id = ?5,
                     soil_dry_raw = ?6, soil_wet_raw = ?7, alerts = ?8, dormant = ?9,
+                    soil_sensor = ?10, light_sensor = ?11, air_sensor = ?12,
                     calibrating_until = CASE WHEN device_id IS ?4 THEN calibrating_until END
              WHERE id = ?1",
-            params![id, p.name, p.location, p.device_id, p.species_id, p.soil_dry_raw, p.soil_wet_raw, p.alerts, p.dormant],
+            params![
+                id, p.name, p.location, p.device_id, p.species_id, p.soil_dry_raw, p.soil_wet_raw, p.alerts, p.dormant,
+                p.soil_sensor, p.light_sensor, p.air_sensor
+            ],
         )?;
         tx.commit()?;
         Ok(n > 0)
@@ -738,6 +777,9 @@ mod tests {
             soil_wet_raw: 1200,
             alerts: true,
             dormant: false,
+            soil_sensor: true,
+            light_sensor: true,
+            air_sensor: true,
             calibrating_until: None,
         }
     }
@@ -810,6 +852,21 @@ mod tests {
         db.insert_reading(&reading("dev"), 600).unwrap();
         assert_eq!(db.history(a, 0).unwrap().len(), 1);
         assert_eq!(db.plant_get(a).unwrap().unwrap().soil_dry_raw, 3300);
+    }
+
+    #[test]
+    fn switched_off_sensors_are_not_stored() {
+        let db = Db::open(&temp_db("off")).unwrap();
+        let mut p = plant("A", Some("dev"));
+        p.soil_sensor = false;
+        let a = db.plant_insert(&p, false).unwrap();
+        db.insert_reading(&reading("dev"), 100).unwrap();
+        let r = db.latest(a).unwrap().unwrap();
+        assert_eq!((r.soil_raw, r.temperature), (None, Some(20.0)));
+        // Calibrating needs the raw value even while the plant has it off.
+        db.plant_set_calibrating(a, Some(1000)).unwrap();
+        db.insert_reading(&reading("dev"), 200).unwrap();
+        assert_eq!(db.devices().unwrap()[0].latest.soil_raw, Some(2000));
     }
 
     #[test]

@@ -88,7 +88,7 @@ fn problems(p: &PlantStatus) -> Vec<(&'static str, String, &'static str, String)
                 let status = match c.status {
                     Status::Low => "low",
                     Status::High => "high",
-                    Status::Ok | Status::Unknown => continue,
+                    Status::Ok | Status::Unknown | Status::Off => continue,
                 };
                 let detail = format!(
                     "{} Now {:.1} {u}, optimal {}–{} {u}.",
@@ -120,6 +120,14 @@ async fn tick(state: &AppState, ntfy: &Ntfy) -> Result<()> {
             Overall::Ok | Overall::Attention => &METRICS,
         };
         for &metric in metrics {
+            // Sensor switched off: drop its problem without a recovery message.
+            if !p.plant.sensor_on(metric) {
+                if state.db.alert_get(p.plant.id, metric)?.is_none_or(|s| s.status != "off") {
+                    let off = AlertState { status: "off".into(), since: now, notified_at: None };
+                    state.db.alert_set(p.plant.id, metric, &off)?;
+                }
+                continue;
+            }
             let problem = current.iter().find(|(m, ..)| *m == metric);
             let status = problem.map_or("ok", |(_, _, s, _)| *s);
 

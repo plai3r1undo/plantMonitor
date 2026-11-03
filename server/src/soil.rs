@@ -132,6 +132,17 @@ pub fn estimate(points: &[(i64, f64)], minimum: f64, expected: Option<Range>, do
     Drying { verdict, days: Some(days), expected_days: expected, waterings: n, message: format!("{message} {basis}") }
 }
 
+/// For a plant whose soil sensor is switched off.
+pub fn off() -> Drying {
+    Drying {
+        verdict: Verdict::Unknown,
+        days: None,
+        expected_days: None,
+        waterings: 0,
+        message: "Not judged: the soil sensor is off.".into(),
+    }
+}
+
 /// Drying cycles: one per watering, from its peak to the minimum (or to the
 /// next watering / the end of the data).
 fn cycles(p: &[(i64, f64)], minimum: f64) -> Vec<Cycle> {

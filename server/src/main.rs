@@ -7,6 +7,7 @@ mod eval;
 mod model;
 mod soil;
 mod status;
+mod telegram;
 
 use std::io::IsTerminal;
 use std::net::SocketAddr;
@@ -161,6 +162,7 @@ async fn serve(config: config::Config, db: db::Db) -> Result<()> {
         http: alerts::client(),
     });
     tokio::spawn(alerts::run(state.clone()));
+    tokio::spawn(telegram::run(state.clone()));
 
     let app = api::router(state);
     let listener = tokio::net::TcpListener::bind(&listen)

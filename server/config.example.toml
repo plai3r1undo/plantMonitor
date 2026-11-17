@@ -34,6 +34,12 @@ trusted_proxy = "127.0.0.1"
 # Link opened when you tap a notification.
 # public_url = "https://plants.example.com"
 
+# When to notify; applies to ntfy and Telegram alike.
+# [alerts]
+# alert_after_minutes = 30    # a problem must last this long before alerting
+# remind_after_hours = 24     # repeat while it persists (0 = never)
+# notify_recovery = true      # also notify when it's fixed
+
 # Push notifications through ntfy (https://ntfy.sh, free, or self-hosted).
 # Install the ntfy app on your phone and subscribe to the topic below.
 # On the public ntfy.sh server the topic name works like a password:
@@ -42,6 +48,12 @@ trusted_proxy = "127.0.0.1"
 # server = "https://ntfy.sh"
 # topic = "plants-CHANGE-ME"
 # token = ""                  # access token, for protected/self-hosted topics
-# alert_after_minutes = 30    # a problem must last this long before alerting
-# remind_after_hours = 24     # repeat while it persists (0 = never)
-# notify_recovery = true      # also notify when it's fixed
+
+# Telegram bot: sends the same alerts and answers /status, /plant NAME,
+# /mute NAME, /unmute NAME. Create the bot by messaging @BotFather (/newbot)
+# and paste its token. Then message your bot: it replies with your chat ID,
+# add it below and restart. Only chats listed here get alerts or answers.
+# Needs only outgoing HTTPS to api.telegram.org (no open port).
+# [telegram]
+# bot_token = "123456789:CHANGE-ME"
+# chat_ids = [123456789]

@@ -138,6 +138,7 @@ if [[ -r $CONF ]]; then
     || { grep -qE '^listen' "$CONF" && fail "listen is not loopback: $(grep -E '^listen' "$CONF")" || pass "listens on loopback (default)"; }
   grep -qE '^device_networks.*0\.0\.0\.0/0' "$CONF" && fail "device_networks allows the whole internet" || pass "device_networks limited to LAN"
   grep -qE '^topic *= *"plants-CHANGE-ME' "$CONF" && warn "ntfy topic is the placeholder"
+  grep -qE '^chat_ids *= *\[ *\]' "$CONF" && warn "telegram chat_ids is empty (the bot sends no alerts)"
 elif [[ -e $CONF ]]; then
   warn "can't read $CONF (run with sudo)"
 else

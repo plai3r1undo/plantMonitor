@@ -36,8 +36,39 @@ pub struct Config {
     /// External URL of the web UI, used as the link in notifications.
     #[serde(default)]
     pub public_url: Option<String>,
+    /// When to alert; applies to every notification channel. Always set
+    /// after `load` (filled from defaults or the legacy `[ntfy]` keys).
+    #[serde(default)]
+    alerts: Option<Alerts>,
     #[serde(default)]
     pub ntfy: Option<Ntfy>,
+    #[serde(default)]
+    pub telegram: Option<Telegram>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Alerts {
+    /// A problem must persist this long before it is notified (avoids
+    /// alerts from short spikes).
+    #[serde(default = "default_alert_after")]
+    pub alert_after_minutes: i64,
+    /// Repeat the alert while the problem persists; 0 = never.
+    #[serde(default = "default_remind_after")]
+    pub remind_after_hours: i64,
+    /// Also notify when a problem clears.
+    #[serde(default = "yes")]
+    pub notify_recovery: bool,
+}
+
+impl Default for Alerts {
+    fn default() -> Self {
+        Alerts {
+            alert_after_minutes: default_alert_after(),
+            remind_after_hours: default_remind_after(),
+            notify_recovery: true,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,16 +80,26 @@ pub struct Ntfy {
     /// Access token for protected topics / self-hosted servers.
     #[serde(default)]
     pub token: Option<String>,
-    /// A problem must persist this long before it is notified (avoids
-    /// alerts from short spikes).
-    #[serde(default = "default_alert_after")]
-    pub alert_after_minutes: i64,
-    /// Repeat the alert while the problem persists; 0 = never.
-    #[serde(default = "default_remind_after")]
-    pub remind_after_hours: i64,
-    /// Also notify when a problem clears.
-    #[serde(default = "yes")]
-    pub notify_recovery: bool,
+    // Older configs set the alert timing here; it now lives in [alerts].
+    #[serde(default)]
+    alert_after_minutes: Option<i64>,
+    #[serde(default)]
+    remind_after_hours: Option<i64>,
+    #[serde(default)]
+    notify_recovery: Option<bool>,
+}
+
+/// A Telegram bot (create one with @BotFather) that sends the alerts and
+/// answers commands such as /status.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Telegram {
+    /// Bot token from @BotFather, like `123456789:AAH...`.
+    pub bot_token: String,
+    /// Chats that receive alerts and may use the bot. Everyone else is
+    /// only told their chat ID, so you can add it here.
+    #[serde(default)]
+    pub chat_ids: Vec<i64>,
 }
 
 /// An IP network such as `192.168.1.0/24` or `fd00::/8`. A bare address
@@ -148,8 +189,35 @@ impl Config {
             }
             n.server = n.server.trim_end_matches('/').to_string();
         }
+        if config.alerts.is_none() {
+            let mut a = Alerts::default();
+            if let Some(n) = &config.ntfy {
+                a.alert_after_minutes = n.alert_after_minutes.unwrap_or(a.alert_after_minutes);
+                a.remind_after_hours = n.remind_after_hours.unwrap_or(a.remind_after_hours);
+                a.notify_recovery = n.notify_recovery.unwrap_or(a.notify_recovery);
+            }
+            config.alerts = Some(a);
+        } else if config
+            .ntfy
+            .as_ref()
+            .is_some_and(|n| n.alert_after_minutes.is_some() || n.remind_after_hours.is_some() || n.notify_recovery.is_some())
+        {
+            bail!("alert timing is set in both [alerts] and [ntfy]; keep it in [alerts] only");
+        }
+        if let Some(t) = &mut config.telegram {
+            t.bot_token = t.bot_token.trim().to_string();
+        }
         config.validate()?;
         Ok(config)
+    }
+
+    pub fn alerts(&self) -> &Alerts {
+        self.alerts.as_ref().expect("set by Config::load")
+    }
+
+    /// Whether any notification channel is configured.
+    pub fn notifications_enabled(&self) -> bool {
+        self.ntfy.is_some() || self.telegram.is_some()
     }
 
     fn validate(&self) -> Result<()> {
@@ -175,13 +243,72 @@ impl Config {
                 bail!("ntfy.server must be an http(s) URL");
             }
         }
+        let a = self.alerts();
+        if a.alert_after_minutes < 0 || a.remind_after_hours < 0 {
+            bail!("alert_after_minutes and remind_after_hours must not be negative");
+        }
+        if let Some(t) = &self.telegram {
+            if !valid_bot_token(&t.bot_token) {
+                bail!("telegram.bot_token doesn't look like a token from @BotFather (digits:letters)");
+            }
+            if t.chat_ids.is_empty() {
+                tracing::warn!(
+                    "telegram.chat_ids is empty: message your bot, it replies with your chat ID to add to config.toml"
+                );
+            }
+        }
         Ok(())
     }
+}
+
+fn valid_bot_token(t: &str) -> bool {
+    t.split_once(':').is_some_and(|(id, secret)| {
+        !id.is_empty()
+            && id.bytes().all(|b| b.is_ascii_digit())
+            && secret.len() >= 20
+            && secret.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse(extra: &str) -> Result<Config> {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("plant-config-test-{}-{n}.toml", std::process::id()));
+        std::fs::write(&dir, format!("device_key = \"0123456789abcdef0123\"\n{extra}"))?;
+        let c = Config::load(&dir);
+        std::fs::remove_file(&dir).ok();
+        c
+    }
+
+    #[test]
+    fn alert_settings() {
+        let c = parse("").unwrap();
+        assert_eq!(c.alerts().alert_after_minutes, 30);
+        assert!(!c.notifications_enabled());
+
+        // Legacy keys in [ntfy] still work.
+        let c = parse("[ntfy]\ntopic = \"plants-0123456789abcdef\"\nremind_after_hours = 0\n").unwrap();
+        assert_eq!(c.alerts().remind_after_hours, 0);
+        assert!(c.notifications_enabled());
+
+        let c = parse("[alerts]\nalert_after_minutes = 5\n").unwrap();
+        assert_eq!(c.alerts().alert_after_minutes, 5);
+        assert!(parse("[alerts]\n[ntfy]\ntopic = \"plants-0123456789abcdef\"\nremind_after_hours = 1\n").is_err());
+    }
+
+    #[test]
+    fn telegram_settings() {
+        let c = parse("[telegram]\nbot_token = \"123456:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw\"\nchat_ids = [42]\n").unwrap();
+        assert_eq!(c.telegram.unwrap().chat_ids, [42]);
+        assert!(c.alerts.is_some());
+        assert!(parse("[telegram]\nbot_token = \"CHANGE-ME\"\n").is_err());
+        assert!(!valid_bot_token("abc:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"));
+        assert!(!valid_bot_token("123456:short"));
+    }
 
     #[test]
     fn cidr_matching() {

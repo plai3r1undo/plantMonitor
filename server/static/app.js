@@ -902,11 +902,14 @@ async function loadSettings() {
   $$(".origin").forEach((el) => (el.textContent = location.origin));
   const [ntfy, tokens] = await Promise.all([api("GET", "/api/notifications"), api("GET", "/api/tokens")]);
 
+  const channels = [];
+  if (ntfy.ntfy) channels.push(`ntfy topic <code>${esc(ntfy.ntfy.server)}/${esc(ntfy.ntfy.topic)}</code> (subscribe to it in the ntfy app)`);
+  if (ntfy.telegram) channels.push(`Telegram bot (${esc(ntfy.telegram.chats)} chat${ntfy.telegram.chats === 1 ? "" : "s"}; send it /status)`);
   $("#ntfy-status").innerHTML = ntfy.enabled
-    ? `Sending to <code>${esc(ntfy.server)}/${esc(ntfy.topic)}</code>. Subscribe to this topic in the ntfy app.
+    ? `Sending to ${channels.join(" and ")}.
        Alerts after ${esc(ntfy.alert_after_minutes)} min,
        ${ntfy.remind_after_hours > 0 ? `reminders every ${esc(ntfy.remind_after_hours)} h` : "no reminders"}.`
-    : `Notifications are off. Add an <code>[ntfy]</code> section to the server's config.toml to enable them.`;
+    : `Notifications are off. Add an <code>[ntfy]</code> or <code>[telegram]</code> section to the server's config.toml to enable them.`;
   $("#ntfy-test").hidden = !ntfy.enabled;
 
   $("#tokens-table").innerHTML = tokens.length === 0

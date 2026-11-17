@@ -456,30 +456,35 @@ async fn notification_status(
     Extension(p): Extension<Principal>,
 ) -> AppResult<Json<serde_json::Value>> {
     require_user(&p)?;
-    Ok(Json(match &state.config.ntfy {
-        None => serde_json::json!({ "enabled": false }),
-        Some(n) => serde_json::json!({
-            "enabled": true,
-            "server": n.server,
-            "topic": n.topic,
-            "alert_after_minutes": n.alert_after_minutes,
-            "remind_after_hours": n.remind_after_hours,
-        }),
-    }))
+    let c = &state.config;
+    let a = c.alerts();
+    Ok(Json(serde_json::json!({
+        "enabled": c.notifications_enabled(),
+        "ntfy": c.ntfy.as_ref().map(|n| serde_json::json!({ "server": n.server, "topic": n.topic })),
+        "telegram": c.telegram.as_ref().map(|t| serde_json::json!({ "chats": t.chat_ids.len() })),
+        "alert_after_minutes": a.alert_after_minutes,
+        "remind_after_hours": a.remind_after_hours,
+    })))
 }
 
 async fn test_notification(State(state): State<Arc<AppState>>) -> AppResult<StatusCode> {
-    if state.config.ntfy.is_none() {
-        return Err(bad_request("notifications are not configured ([ntfy] in config.toml)".into()));
+    if !state.config.notifications_enabled() {
+        return Err(bad_request("notifications are not configured ([ntfy] or [telegram] in config.toml)".into()));
     }
-    alerts::send(
+    let results = alerts::deliver(
         &state,
-        "🌱 Plant monitor test".into(),
-        "Notifications are working.".into(),
+        "🌱 Plant monitor test",
+        "Notifications are working.",
         3,
-        vec!["potted_plant"],
+        &["potted_plant"],
     )
-    .await
-    .map_err(|e| AppError::Status(StatusCode::BAD_GATEWAY, format!("sending failed: {e}")))?;
+    .await;
+    let failed: Vec<String> = results
+        .iter()
+        .filter_map(|(channel, r)| r.as_ref().err().map(|e| format!("{channel}: {e:#}")))
+        .collect();
+    if !failed.is_empty() {
+        return Err(AppError::Status(StatusCode::BAD_GATEWAY, format!("sending failed ({})", failed.join("; "))));
+    }
     Ok(StatusCode::NO_CONTENT)
 }

@@ -48,7 +48,7 @@ systemctl restart plant-server
 
 log "Done. Next steps:"
 cat <<EOF
-  1. Review $CONF_DIR/config.toml (ntfy, public_url), then: systemctl restart plant-server
+  1. Review $CONF_DIR/config.toml (ntfy or telegram, public_url), then: systemctl restart plant-server
   2. Create your login:
        sudo -u plantmon plant-server -c $CONF_DIR/config.toml user-add <name>
   3. Set up Caddy for HTTPS: see deploy/Caddyfile

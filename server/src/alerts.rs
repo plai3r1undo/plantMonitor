@@ -1,4 +1,4 @@
-//! Push notifications through ntfy when a plant needs attention.
+//! Push notifications (ntfy and/or Telegram) when a plant needs attention.
 //!
 //! Every minute each plant (with alerts enabled) is evaluated. Per plant and
 //! metric we remember the current problem and when it started; a problem is
@@ -11,11 +11,10 @@ use std::time::Duration;
 use anyhow::{bail, Result};
 use serde::Serialize;
 
-use crate::config::Ntfy;
 use crate::db::AlertState;
 use crate::eval::{Overall, Status};
 use crate::status::{self, PlantStatus};
-use crate::AppState;
+use crate::{telegram, AppState};
 
 const TICK: Duration = Duration::from_secs(60);
 const OFFLINE: &str = "offline";
@@ -38,14 +37,14 @@ pub fn client() -> reqwest::Client {
         .expect("building HTTP client")
 }
 
-pub async fn send(state: &AppState, title: String, message: String, priority: u8, tags: Vec<&'static str>) -> Result<()> {
+async fn send_ntfy(state: &AppState, title: &str, message: &str, priority: u8, tags: &[&'static str]) -> Result<()> {
     let Some(ntfy) = &state.config.ntfy else { bail!("ntfy is not configured") };
     let body = Message {
         topic: &ntfy.topic,
-        title,
-        message,
+        title: title.to_string(),
+        message: message.to_string(),
         priority,
-        tags,
+        tags: tags.to_vec(),
         click: state.config.public_url.as_deref(),
     };
     // JSON publishing (POST to the server root) handles non-ASCII titles.
@@ -60,13 +59,61 @@ pub async fn send(state: &AppState, title: String, message: String, priority: u8
     Ok(())
 }
 
+/// Sends to every configured channel and returns each channel's result.
+pub async fn deliver(
+    state: &AppState,
+    title: &str,
+    message: &str,
+    priority: u8,
+    tags: &[&'static str],
+) -> Vec<(&'static str, Result<()>)> {
+    let mut out = Vec::new();
+    if state.config.ntfy.is_some() {
+        out.push(("ntfy", send_ntfy(state, title, message, priority, tags).await));
+    }
+    if state.config.telegram.is_some() {
+        // Low-priority messages (recoveries) arrive without a sound.
+        out.push(("telegram", telegram::notify(state, title, message, priority <= 2).await));
+    }
+    out
+}
+
+/// Sends to every channel; succeeds if at least one delivered it, so a
+/// channel that is down doesn't cause repeats on the others.
+pub async fn send(state: &AppState, title: String, message: String, priority: u8, tags: Vec<&'static str>) -> Result<()> {
+    let results = deliver(state, &title, &message, priority, &tags).await;
+    if results.is_empty() {
+        bail!("no notification channel is configured");
+    }
+    let mut delivered = false;
+    for (channel, r) in &results {
+        match r {
+            Ok(()) => delivered = true,
+            Err(e) => tracing::warn!("sending to {channel}: {e:#}"),
+        }
+    }
+    if !delivered {
+        bail!("all notification channels failed");
+    }
+    Ok(())
+}
+
 pub async fn run(state: Arc<AppState>) {
-    let Some(ntfy) = &state.config.ntfy else { return };
-    tracing::info!("alerts enabled via {}", ntfy.server);
+    let mut channels = Vec::new();
+    if let Some(n) = &state.config.ntfy {
+        channels.push(format!("ntfy ({})", n.server));
+    }
+    if state.config.telegram.is_some() {
+        channels.push("Telegram".to_string());
+    }
+    if channels.is_empty() {
+        return;
+    }
+    tracing::info!("alerts enabled via {}", channels.join(" and "));
     let mut interval = tokio::time::interval(TICK);
     loop {
         interval.tick().await;
-        if let Err(e) = tick(&state, ntfy).await {
+        if let Err(e) = tick(&state).await {
             tracing::error!("alert check failed: {e:#}");
         }
     }
@@ -107,7 +154,8 @@ fn problems(p: &PlantStatus) -> Vec<(&'static str, String, &'static str, String)
 
 const METRICS: [&str; 5] = ["soil_moisture", "light_lux", "temperature", "humidity", OFFLINE];
 
-async fn tick(state: &AppState, ntfy: &Ntfy) -> Result<()> {
+async fn tick(state: &AppState) -> Result<()> {
+    let cfg = state.config.alerts();
     let now = status::now();
     let plants = status::all_plants(&state.db, state.config.offline_after_minutes * 60)?;
     for p in plants.iter().filter(|p| p.plant.alerts) {
@@ -136,7 +184,7 @@ async fn tick(state: &AppState, ntfy: &Ntfy) -> Result<()> {
                 prev => {
                     // Status changed (or first time seen): start a new period.
                     let was_notified = prev.is_some_and(|s| s.notified_at.is_some());
-                    if was_notified && status == "ok" && ntfy.notify_recovery {
+                    if was_notified && status == "ok" && cfg.notify_recovery {
                         let title = format!("✅ {}: {} back to normal", p.plant.name, label(metric));
                         let msg = "Back within the optimal range.".to_string();
                         if let Err(e) = send(state, title, msg, 2, vec!["white_check_mark"]).await {
@@ -151,8 +199,8 @@ async fn tick(state: &AppState, ntfy: &Ntfy) -> Result<()> {
             let Some((_, title, _, detail)) = problem else { continue };
 
             let due = match st.notified_at {
-                None => now - st.since >= ntfy.alert_after_minutes * 60,
-                Some(at) => ntfy.remind_after_hours > 0 && now - at >= ntfy.remind_after_hours * 3600,
+                None => now - st.since >= cfg.alert_after_minutes * 60,
+                Some(at) => cfg.remind_after_hours > 0 && now - at >= cfg.remind_after_hours * 3600,
             };
             if !due {
                 continue;
@@ -173,7 +221,7 @@ async fn tick(state: &AppState, ntfy: &Ntfy) -> Result<()> {
     Ok(())
 }
 
-fn label(metric: &str) -> &'static str {
+pub fn label(metric: &str) -> &'static str {
     match metric {
         "soil_moisture" => "soil moisture",
         "light_lux" => "light",

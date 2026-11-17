@@ -1,11 +1,11 @@
 # plantMonitor
 
-House-plant monitoring: one ESP32 per pot measures light, air temperature/humidity and soil moisture, and sends readings over WiFi to a central Rust server. The server compares them with each species' optimal ranges, sends push notifications when a plant needs attention, serves a password-protected web dashboard (where you also manage plants and species), and exposes a JSON/CSV API for scripts.
+House-plant monitoring: one ESP32 per pot measures light, air temperature/humidity and soil moisture, and sends readings over WiFi to a central Rust server. The server compares them with each species' optimal ranges, sends push notifications (ntfy and/or a Telegram bot) when a plant needs attention, serves a password-protected web dashboard (where you also manage plants and species), and exposes a JSON/CSV API for scripts.
 
 ```
  ┌──────────── pot ────────────┐          ┌──────────────── DMZ host ────────────────┐
  │ BH1750  DHT22  HW-390       │HTTPS, LAN│ Caddy (TLS) ──► plant-server (Rust)      │
- │    └──── ESP32 ────┘        │ ───────► │                  SQLite · alerts · UI    │──► ntfy ──► phone
+ │    └──── ESP32 ────┘        │ ───────► │                  SQLite · alerts · UI    │──► ntfy / Telegram ──► phone
  │  wake → measure → POST →    │          └──────────────────────────────────────────┘
  │  deep sleep (10 min)        │                     ▲ browser (login) / curl (token)
  └─────────────────────────────┘
@@ -109,7 +109,7 @@ The server also refuses readings from any address outside your LAN (`device_netw
 | Internet → DMZ host | nothing; only if you enable the public site: TCP 443 + 80 (80 for Let's Encrypt) |
 | LAN → DMZ host | TCP 443 (sensors, browser), TCP 22 from your PC only |
 | DMZ host → LAN | **nothing** (if the host is compromised, it can't reach your network) |
-| DMZ host → Internet | TCP 443 (ntfy, OS updates, Let's Encrypt), DNS, NTP |
+| DMZ host → Internet | TCP 443 (ntfy, Telegram, OS updates, Let's Encrypt), DNS, NTP |
 
 ### 4. Keep the host healthy
 
@@ -151,19 +151,55 @@ What's left, honestly:
 - **Dependencies** (axum, rusqlite, etc.) can have vulnerabilities. Rebuild and redeploy now and then (`cargo update && ./build.sh server && sudo deploy/install.sh`); `cargo install cargo-audit && cargo audit` checks for known issues.
 - If only you need remote access, a **VPN (WireGuard)** into your network is still safer than any exposed web app. Everything here works the same over a VPN.
 
-## Notifications (ntfy)
+## Notifications
+
+Alerts can go to ntfy, a Telegram bot, or both. A problem is notified after it has lasted `alert_after_minutes` (default 30), repeated every `remind_after_hours` (default 24), and you get a ✅ when it's fixed. These settings are shared by both channels:
+
+```toml
+public_url = "https://plants.example.com"   # where tapping a notification goes
+
+[alerts]
+alert_after_minutes = 30
+remind_after_hours = 24
+notify_recovery = true
+```
+
+Alerts can be turned off per plant. **Settings → Send test notification** checks every configured channel.
+
+### ntfy
 
 [ntfy.sh](https://ntfy.sh) is free and needs no account. Install the ntfy app on your phone and subscribe to a long random topic name, then add it to the config:
 
 ```toml
-public_url = "https://plants.example.com"   # where tapping the notification goes
-
 [ntfy]
 server = "https://ntfy.sh"
 topic = "plants-3f9c0e1a7b2d4c86e5a1"         # "plants-" + openssl rand -hex 10
 ```
 
-On the public server, anyone who knows the topic name can read it, so treat the name like a password. You can also self-host ntfy and set `token`. A problem is notified after it has lasted `alert_after_minutes` (default 30), repeated every `remind_after_hours` (default 24), and you get a ✅ when it's fixed. Alerts can be turned off per plant. **Settings → Send test notification** checks the setup.
+On the public server, anyone who knows the topic name can read it, so treat the name like a password. You can also self-host ntfy and set `token`.
+
+### Telegram bot
+
+The bot sends the same alerts and also answers questions:
+
+| Command | Answer |
+|---|---|
+| `/status` | every plant with ✅ / ⚠️ / 📴 and what's wrong |
+| `/plant NAME` (or just the name) | latest readings vs. optimal ranges, advice, soil drying |
+| `/mute NAME`, `/unmute NAME` | turn a plant's alerts off/on |
+
+Setup:
+
+1. In Telegram, message **@BotFather**, send `/newbot` and pick a name. It gives you a token.
+2. Add it to config.toml and restart the server:
+   ```toml
+   [telegram]
+   bot_token = "123456789:AA..."
+   chat_ids = []
+   ```
+3. Send any message to your bot. It replies with your chat ID; put it in `chat_ids = [123456789]` and restart again.
+
+The bot uses long polling, so the server only needs outgoing HTTPS to `api.telegram.org`; no port is opened. It ignores every chat not in `chat_ids` (it only tells a private chat its ID, once). Keep the token secret: whoever has it can impersonate the bot. Note that Telegram bot messages aren't end-to-end encrypted; they pass through Telegram's servers.
 
 ## How plants are evaluated
 
